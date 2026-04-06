@@ -115,7 +115,7 @@ jobs:
     name: Deploy IIS (WebDeploy)
     runs-on: windows-latest
     needs: [build, test]
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push' && vars.IIS_DEPLOY_ENABLED == 'true'
     environment:
       name: production
       url: https://api.plateforme-emploi.fr
