@@ -127,32 +127,22 @@ jobs:
           path: publish/
 
       - name: Deploy via WebDeploy (MSDeploy)
-        shell: cmd
-        run: >
-          "C:\Program Files\IIS\Microsoft Web Deploy V3\msdeploy.exe"
-          -verb:sync
-          -source:contentPath="%CD%\publish"
-          -dest:contentPath="${{ secrets.IIS_SITE_NAME }}",
-          computerName="https://${{ secrets.IIS_SERVER_NAME }}:8172/msdeploy.axd",
-          userName="${{ secrets.IIS_USERNAME }}",
-          password="${{ secrets.IIS_PASSWORD }}",
-          authType="Basic"
-          -enableRule:AppOffline
-          -allowUntrusted
-          -retryAttempts:3
-          -retryInterval:3000
+        shell: pwsh
+        run: |
+          $msdeploy = "C:\Program Files\IIS\Microsoft Web Deploy V3\msdeploy.exe"
+          $source = "contentPath=$((Get-Location).Path)\publish"
+          $dest = "contentPath=${{ secrets.IIS_SITE_NAME }},computerName=https://${{ secrets.IIS_SERVER_NAME }}:8172/msdeploy.axd,userName=${{ secrets.IIS_USERNAME }},password=${{ secrets.IIS_PASSWORD }},authType=Basic"
+          & $msdeploy -verb:sync "-source:$source" "-dest:$dest" -enableRule:AppOffline -allowUntrusted -retryAttempts:3 -retryInterval:3000
+          if ($LASTEXITCODE -ne 0) { throw "MSDeploy failed with exit code $LASTEXITCODE" }
 
       - name: Verify deployment
         shell: pwsh
+        continue-on-error: true
         run: |
           Start-Sleep -Seconds 10
           try {
-            $response = Invoke-WebRequest -Uri "https://api.plateforme-emploi.fr/api/joboffers/stats" -UseBasicParsing -TimeoutSec 30
-            if ($response.StatusCode -eq 200) {
-              Write-Host "API OK — Status 200"
-            } else {
-              Write-Warning "API responded with $($response.StatusCode)"
-            }
+            $r = Invoke-WebRequest -Uri "http://${{ secrets.IIS_SERVER_NAME }}:5033/api/joboffers/stats" -UseBasicParsing -TimeoutSec 30
+            Write-Host "API OK — Status $($r.StatusCode)"
           } catch {
-            Write-Warning "Health check failed: $_"
+            Write-Warning "Health check: $_"
           }
