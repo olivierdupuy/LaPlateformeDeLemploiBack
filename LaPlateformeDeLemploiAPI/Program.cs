@@ -67,11 +67,18 @@ builder.Services.AddCors(options =>
 
 var app = builder.Build();
 
-if (app.Environment.IsDevelopment())
+// Swagger actif en dev et en prod pour debug
+app.UseSwagger();
+app.UseSwaggerUI();
+
+if (!app.Environment.IsDevelopment())
 {
-    app.UseSwagger();
-    app.UseSwaggerUI();
+    app.UseExceptionHandler("/error");
 }
+
+// Endpoint de diagnostic
+app.MapGet("/health", () => Results.Ok(new { status = "ok", time = DateTime.UtcNow, env = app.Environment.EnvironmentName }));
+app.MapGet("/error", () => Results.Problem());
 
 app.UseCors("AllowAngular");
 app.UseStaticFiles();
