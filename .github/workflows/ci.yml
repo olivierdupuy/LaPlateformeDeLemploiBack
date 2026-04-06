@@ -132,7 +132,7 @@ jobs:
           $msdeploy = "C:\Program Files\IIS\Microsoft Web Deploy V3\msdeploy.exe"
           $source = "contentPath=$((Get-Location).Path)\publish"
           $dest = "contentPath=${{ secrets.IIS_SITE_NAME }},computerName=https://${{ secrets.IIS_SERVER_NAME }}:8172/msdeploy.axd,userName=${{ secrets.IIS_USERNAME }},password=${{ secrets.IIS_PASSWORD }},authType=Basic"
-          & $msdeploy -verb:sync "-source:$source" "-dest:$dest" -enableRule:AppOffline -allowUntrusted -retryAttempts:3 -retryInterval:3000 -skip:objectName=filePath,absolutePath=\\logs
+          & $msdeploy -verb:sync "-source:$source" "-dest:$dest" -enableRule:AppOffline -allowUntrusted -retryAttempts:3 -retryInterval:3000 -skip:objectName=dirPath,absolutePath=\\logs -skip:objectName=filePath,absolutePath=\\logs
           if ($LASTEXITCODE -ne 0) { throw "MSDeploy failed with exit code $LASTEXITCODE" }
 
       - name: Verify deployment
