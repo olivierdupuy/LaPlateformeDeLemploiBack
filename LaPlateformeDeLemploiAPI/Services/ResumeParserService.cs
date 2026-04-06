@@ -17,7 +17,9 @@ public class ResumeParserService
 
     public ResumeParserService(IConfiguration config)
     {
-        _openAiKey = config["OpenAI:ApiKey"] ?? "";
+        _openAiKey = Environment.GetEnvironmentVariable("OPENAI_SECRET_PAIKEY")
+                     ?? config["OpenAI:ApiKey"]
+                     ?? "";
     }
 
     public string ExtractText(Stream fileStream, string fileName)

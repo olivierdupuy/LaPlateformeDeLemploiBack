@@ -9,7 +9,9 @@ public class CompanyAIService
 
     public CompanyAIService(IConfiguration config)
     {
-        _openAiKey = config["OpenAI:ApiKey"] ?? "";
+        _openAiKey = Environment.GetEnvironmentVariable("OPENAI_SECRET_PAIKEY")
+                     ?? config["OpenAI:ApiKey"]
+                     ?? "";
     }
 
     private ChatClient GetClient() =>
