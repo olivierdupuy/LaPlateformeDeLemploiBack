@@ -71,16 +71,34 @@ var app = builder.Build();
 app.UseSwagger();
 app.UseSwaggerUI();
 
-if (!app.Environment.IsDevelopment())
+// CORS doit etre AVANT le gestionnaire d'erreurs pour que les reponses d'erreur
+// incluent aussi les headers CORS (sinon le navigateur bloque la reponse)
+app.UseCors("AllowAngular");
+
+// Gestionnaire d'erreurs global avec logging
+app.UseExceptionHandler(errorApp =>
 {
-    app.UseExceptionHandler("/error");
-}
+    errorApp.Run(async context =>
+    {
+        var logger = context.RequestServices.GetRequiredService<ILoggerFactory>().CreateLogger("GlobalErrorHandler");
+        var exceptionFeature = context.Features.Get<Microsoft.AspNetCore.Diagnostics.IExceptionHandlerFeature>();
+        var exception = exceptionFeature?.Error;
+
+        logger.LogError(exception, "Erreur non geree sur {Method} {Path}", context.Request.Method, context.Request.Path);
+
+        context.Response.StatusCode = 500;
+        context.Response.ContentType = "application/json";
+        await context.Response.WriteAsJsonAsync(new
+        {
+            error = "Une erreur interne est survenue.",
+            path = $"{context.Request.Method} {context.Request.Path}",
+            detail = app.Environment.IsDevelopment() ? exception?.ToString() : exception?.Message
+        });
+    });
+});
 
 // Endpoint de diagnostic
 app.MapGet("/health", () => Results.Ok(new { status = "ok", time = DateTime.UtcNow, env = app.Environment.EnvironmentName }));
-app.MapGet("/error", () => Results.Problem());
-
-app.UseCors("AllowAngular");
 app.UseStaticFiles();
 app.UseAuthentication();
 app.UseAuthorization();
@@ -88,10 +106,15 @@ app.MapControllers();
 app.MapHub<ChatHub>("/hubs/chat");
 
 // Auto-migrate + seed test users
-using (var scope = app.Services.CreateScope())
+try
 {
+    using var scope = app.Services.CreateScope();
     var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+    var startupLogger = scope.ServiceProvider.GetRequiredService<ILoggerFactory>().CreateLogger("Startup");
+
+    startupLogger.LogInformation("Tentative de connexion a la base de donnees...");
     db.Database.Migrate();
+    startupLogger.LogInformation("Migration de la base de donnees terminee avec succes.");
 
     // Creer les comptes de test s'ils n'existent pas
     if (!db.Users.Any(u => u.Email == "chercheur@test.fr"))
@@ -125,6 +148,12 @@ using (var scope = app.Services.CreateScope())
     }
 
     db.SaveChanges();
+}
+catch (Exception ex)
+{
+    var startupLogger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Startup");
+    startupLogger.LogError(ex, "ERREUR au demarrage : impossible de se connecter a la base de donnees ou d'executer les migrations. ConnectionString: {ConnStr}",
+        builder.Configuration.GetConnectionString("DefaultConnection")?.Substring(0, Math.Min(50, builder.Configuration.GetConnectionString("DefaultConnection")?.Length ?? 0)) + "...");
 }
 
 app.Run();
