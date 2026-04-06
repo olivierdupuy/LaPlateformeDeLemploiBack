@@ -1,0 +1,39 @@
+## .NET
+bin/
+obj/
+publish/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+## IDE
+.vs/
+.vscode/
+*.swp
+*~
+
+## Build
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+bld/
+[Ll]og/
+[Ll]ogs/
+
+## NuGet
+*.nupkg
+**/packages/*
+project.lock.json
+project.fragment.lock.json
+artifacts/
+
+## Secrets — ne jamais commit
+appsettings.Production.json
+*.pfx
+*.key
+
+## OS
+Thumbs.db
+.DS_Store
