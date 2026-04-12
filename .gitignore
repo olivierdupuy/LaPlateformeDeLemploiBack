@@ -2,3 +2,6 @@
 bin/
 obj/
 *.user
+firebase-service-account.json
+la-plateforme-de-l-emploi-*.json
+wwwroot/uploads/

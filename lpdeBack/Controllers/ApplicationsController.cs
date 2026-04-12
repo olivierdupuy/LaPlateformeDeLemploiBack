@@ -2,9 +2,12 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using System.Security.Claims;
+using Microsoft.AspNetCore.SignalR;
 using lpdeBack.Data;
 using lpdeBack.Models;
 using lpdeBack.DTOs;
+using lpdeBack.Hubs;
+using lpdeBack.Services;
 
 namespace lpdeBack.Controllers;
 
@@ -13,8 +16,15 @@ namespace lpdeBack.Controllers;
 public class ApplicationsController : ControllerBase
 {
     private readonly AppDbContext _context;
+    private readonly IHubContext<ChatHub> _hubContext;
+    private readonly PushNotificationService _pushService;
 
-    public ApplicationsController(AppDbContext context) => _context = context;
+    public ApplicationsController(AppDbContext context, IHubContext<ChatHub> hubContext, PushNotificationService pushService)
+    {
+        _context = context;
+        _hubContext = hubContext;
+        _pushService = pushService;
+    }
 
     private string? GetUserId() => User.FindFirstValue(ClaimTypes.NameIdentifier);
     private bool IsAdmin() => User.IsInRole("Admin");
@@ -83,6 +93,24 @@ public class ApplicationsController : ControllerBase
                 Type = "StatutModifie"
             });
             await _context.SaveChangesAsync();
+
+            // Real-time notification to candidate
+            foreach (var connId in ChatHub.GetConnectionIds(app.UserId))
+            {
+                await _hubContext.Clients.Client(connId).SendAsync("ApplicationStatusChanged", new
+                {
+                    applicationId = app.Id,
+                    status = dto.Status,
+                    jobTitle = app.JobOffer.Title,
+                    company = app.JobOffer.Company
+                });
+                await _hubContext.Clients.Client(connId).SendAsync("NewNotification");
+            }
+
+            // Push notification (mobile will suppress if app is in foreground)
+            await _pushService.SendToUser(app.UserId, "Statut de candidature modifie",
+                $"Votre candidature pour \"{app.JobOffer.Title}\" est maintenant {statusLabels.GetValueOrDefault(dto.Status, dto.Status)}.",
+                "/tabs/applications");
         }
 
         return NoContent();
@@ -256,6 +284,23 @@ public class ApplicationsController : ControllerBase
                 Type = "NouveauCandidat"
             });
             await _context.SaveChangesAsync();
+
+            // Real-time notification to recruiter
+            foreach (var connId in ChatHub.GetConnectionIds(job.CreatedByUserId))
+            {
+                await _hubContext.Clients.Client(connId).SendAsync("NewApplication", new
+                {
+                    applicationId = app.Id,
+                    candidateName = $"{user.FirstName} {user.LastName}",
+                    jobTitle = job.Title
+                });
+                await _hubContext.Clients.Client(connId).SendAsync("NewNotification");
+            }
+
+            // Push notification to recruiter
+            await _pushService.SendToUser(job.CreatedByUserId, "Nouvelle candidature",
+                $"{user.FirstName} {user.LastName} a postule a \"{job.Title}\"",
+                "/tabs/recruiter-applications");
         }
 
         return CreatedAtAction(nameof(GetById), new { id = app.Id }, app);

@@ -15,6 +15,7 @@ public class AppDbContext : IdentityDbContext<AppUser>
     public DbSet<Interview> Interviews => Set<Interview>();
     public DbSet<Message> Messages => Set<Message>();
     public DbSet<CvSection> CvSections => Set<CvSection>();
+    public DbSet<PushToken> PushTokens { get; set; }
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {

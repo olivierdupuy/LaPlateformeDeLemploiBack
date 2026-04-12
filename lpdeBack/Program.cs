@@ -3,10 +3,22 @@ using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using System.Text;
+using FirebaseAdmin;
+using Google.Apis.Auth.OAuth2;
 using lpdeBack.Data;
 using lpdeBack.Models;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// Firebase Admin SDK
+var firebaseCredPath = Path.Combine(builder.Environment.ContentRootPath, "firebase-service-account.json");
+if (File.Exists(firebaseCredPath))
+{
+    FirebaseApp.Create(new AppOptions
+    {
+        Credential = GoogleCredential.FromFile(firebaseCredPath)
+    });
+}
 
 builder.Services.AddControllers()
     .AddJsonOptions(options =>
@@ -50,10 +62,25 @@ builder.Services.AddAuthentication(options =>
         ValidAudience = builder.Configuration["Jwt:Audience"] ?? "LpdeFront",
         IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtKey))
     };
+    options.Events = new JwtBearerEvents
+    {
+        OnMessageReceived = context =>
+        {
+            var accessToken = context.Request.Query["access_token"];
+            var path = context.HttpContext.Request.Path;
+            if (!string.IsNullOrEmpty(accessToken) && path.StartsWithSegments("/hubs"))
+            {
+                context.Token = accessToken;
+            }
+            return Task.CompletedTask;
+        }
+    };
 });
 
 builder.Services.AddAuthorization();
 builder.Services.AddHttpClient();
+builder.Services.AddSignalR();
+builder.Services.AddScoped<lpdeBack.Services.PushNotificationService>();
 
 builder.Services.AddCors(options =>
 {
@@ -62,13 +89,15 @@ builder.Services.AddCors(options =>
         policy.WithOrigins(
                   "http://localhost:4200",
                   "http://localhost",
+                  "http://localhost:5013",
                   "https://localhost",
                   "capacitor://localhost",
                   "https://www.laplateformedelemploi.com",
                   "https://laplateformedelemploi.com"
               )
               .AllowAnyHeader()
-              .AllowAnyMethod();
+              .AllowAnyMethod()
+              .AllowCredentials();
     });
 });
 
@@ -85,6 +114,7 @@ app.UseStaticFiles();
 app.UseCors("AllowAngular");
 app.UseAuthentication();
 app.UseAuthorization();
+app.MapHub<lpdeBack.Hubs.ChatHub>("/hubs/chat");
 app.MapControllers();
 
 // ═══════════════════════════════════

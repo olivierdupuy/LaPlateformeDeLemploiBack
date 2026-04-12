@@ -2,9 +2,12 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using System.Security.Claims;
+using Microsoft.AspNetCore.SignalR;
 using lpdeBack.Data;
 using lpdeBack.Models;
 using lpdeBack.DTOs;
+using lpdeBack.Hubs;
+using lpdeBack.Services;
 
 namespace lpdeBack.Controllers;
 
@@ -14,7 +17,14 @@ namespace lpdeBack.Controllers;
 public class MessagesController : ControllerBase
 {
     private readonly AppDbContext _context;
-    public MessagesController(AppDbContext context) => _context = context;
+    private readonly IHubContext<ChatHub> _hubContext;
+    private readonly PushNotificationService _pushService;
+    public MessagesController(AppDbContext context, IHubContext<ChatHub> hubContext, PushNotificationService pushService)
+    {
+        _context = context;
+        _hubContext = hubContext;
+        _pushService = pushService;
+    }
     private string GetUserId() => User.FindFirstValue(ClaimTypes.NameIdentifier)!;
 
     [HttpGet("conversations")]
@@ -126,6 +136,36 @@ public class MessagesController : ControllerBase
         });
 
         await _context.SaveChangesAsync();
+
+        // Real-time: send message to conversation group and receiver
+        var senderUser = await _context.Users.FindAsync(userId);
+        var messagePayload = new
+        {
+            message.Id,
+            message.SenderId,
+            message.ReceiverId,
+            message.ApplicationId,
+            message.Content,
+            message.IsRead,
+            message.CreatedAt,
+            senderName = senderUser != null ? $"{senderUser.FirstName} {senderUser.LastName}" : "Inconnu",
+            isMine = false
+        };
+
+        await _hubContext.Clients.Group($"conversation_{dto.ApplicationId}")
+            .SendAsync("NewMessage", messagePayload);
+
+        // Also notify receiver directly for badge update
+        foreach (var connId in ChatHub.GetConnectionIds(receiverId))
+        {
+            await _hubContext.Clients.Client(connId).SendAsync("UnreadCountUpdate");
+        }
+
+        // Push notification (mobile will suppress if app is in foreground)
+        await _pushService.SendToUser(receiverId, "Nouveau message",
+            $"{senderUser?.FirstName} {senderUser?.LastName}: {dto.Content[..Math.Min(dto.Content.Length, 80)]}",
+            $"/conversation/{dto.ApplicationId}");
+
         return Ok(new { message.Id });
     }
 
