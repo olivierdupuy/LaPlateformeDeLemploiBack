@@ -26,11 +26,13 @@ jobs:
         run: |
           dotnet publish lpdeBack/lpdeBack.csproj -c Release -o publish --no-restore
 
-      - name: Override connection string in appsettings
+      - name: Override secrets in appsettings
         shell: pwsh
         run: |
           $appSettings = Get-Content "publish/appsettings.json" | ConvertFrom-Json
           $appSettings.ConnectionStrings.DefaultConnection = "${{ secrets.DB_CONNECTION_STRING }}"
+          $appSettings.OpenAI.ApiKey = "${{ secrets.OPENAI_API_KEY }}"
+          if ($appSettings.Firebase) { $appSettings.Firebase.ServerKey = "${{ secrets.FIREBASE_SERVER_KEY }}" }
           $appSettings | ConvertTo-Json -Depth 10 | Set-Content "publish/appsettings.json"
 
       - name: Deploy to IIS via WebDeploy
