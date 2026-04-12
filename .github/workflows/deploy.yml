@@ -1,0 +1,44 @@
+name: Build & Deploy to IIS
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  DOTNET_VERSION: '8.0.x'
+
+jobs:
+  build-and-deploy:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Restore dependencies
+        run: dotnet restore lpdeBack/lpdeBack.csproj
+
+      - name: Publish
+        run: |
+          dotnet publish lpdeBack/lpdeBack.csproj -c Release -o publish --no-restore
+
+      - name: Override connection string in appsettings
+        shell: pwsh
+        run: |
+          $appSettings = Get-Content "publish/appsettings.json" | ConvertFrom-Json
+          $appSettings.ConnectionStrings.DefaultConnection = "${{ secrets.DB_CONNECTION_STRING }}"
+          $appSettings | ConvertTo-Json -Depth 10 | Set-Content "publish/appsettings.json"
+
+      - name: Deploy to IIS via WebDeploy
+        shell: cmd
+        run: |
+          "C:\Program Files\IIS\Microsoft Web Deploy V3\msdeploy.exe" ^
+            -verb:sync ^
+            -source:contentPath="%GITHUB_WORKSPACE%\publish" ^
+            -dest:contentPath="${{ secrets.IIS_SITE_NAME }}",computerName="https://${{ secrets.IIS_SERVER_IP }}:8172/msdeploy.axd",userName="${{ secrets.WEBDEPLOY_USERNAME }}",password="${{ secrets.WEBDEPLOY_PASSWORD }}",authType="Basic" ^
+            -enableRule:AppOffline ^
+            -allowUntrusted
