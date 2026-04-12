@@ -105,4 +105,5 @@ public class UserDto
     public string? LinkedInUrl { get; set; }
     public string? PortfolioUrl { get; set; }
     public DateTime CreatedAt { get; set; }
+    public bool IsOnline { get; set; }
 }

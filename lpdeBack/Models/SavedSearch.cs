@@ -27,5 +27,9 @@ public class SavedSearch
     [MaxLength(100)]
     public string? Location { get; set; }
 
+    public bool AlertEnabled { get; set; } = false;
+
+    public DateTime? LastAlertAt { get; set; }
+
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 }

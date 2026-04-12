@@ -8,6 +8,9 @@ using System.Security.Claims;
 using System.Text;
 using lpdeBack.Models;
 using lpdeBack.DTOs;
+using lpdeBack.Data;
+using lpdeBack.Hubs;
+using lpdeBack.Services;
 
 namespace lpdeBack.Controllers;
 
@@ -18,21 +21,35 @@ public class AuthController : ControllerBase
     private readonly UserManager<AppUser> _userManager;
     private readonly SignInManager<AppUser> _signInManager;
     private readonly IConfiguration _config;
+    private readonly ActivityLogService _log;
+    private readonly AppDbContext _context;
 
     public AuthController(
         UserManager<AppUser> userManager,
         SignInManager<AppUser> signInManager,
-        IConfiguration config)
+        IConfiguration config,
+        ActivityLogService log,
+        AppDbContext context)
     {
         _userManager = userManager;
         _signInManager = signInManager;
         _config = config;
+        _log = log;
+        _context = context;
     }
 
     /// <summary>Register a new user</summary>
     [HttpPost("register")]
     public async Task<ActionResult<AuthResponseDto>> Register(RegisterDto dto)
     {
+        // Check if registration is allowed
+        var allowReg = await _context.PlatformSettings
+            .Where(s => s.Key == "allow_registration")
+            .Select(s => s.Value)
+            .FirstOrDefaultAsync();
+        if (allowReg == "false")
+            return BadRequest(new { message = "Les inscriptions sont actuellement fermees. Veuillez reessayer plus tard." });
+
         var existingUser = await _userManager.FindByEmailAsync(dto.Email);
         if (existingUser != null)
             return BadRequest(new { message = "Un compte avec cet email existe deja." });
@@ -57,6 +74,7 @@ public class AuthController : ControllerBase
 
         await _userManager.AddToRoleAsync(user, dto.Role);
 
+        _ = _log.Log("Register", "User", null, $"Inscription: {user.FirstName} {user.LastName} ({dto.Role})", user.Id, $"{user.FirstName} {user.LastName}", HttpContext.Connection.RemoteIpAddress?.ToString());
         return Ok(GenerateAuthResponse(user));
     }
 
@@ -72,6 +90,7 @@ public class AuthController : ControllerBase
         if (!result.Succeeded)
             return Unauthorized(new { message = "Email ou mot de passe incorrect." });
 
+        _ = _log.Log("Login", "User", null, $"Connexion: {user.FirstName} {user.LastName}", user.Id, $"{user.FirstName} {user.LastName}", HttpContext.Connection.RemoteIpAddress?.ToString());
         return Ok(GenerateAuthResponse(user));
     }
 
@@ -132,7 +151,15 @@ public class AuthController : ControllerBase
     public async Task<ActionResult<IEnumerable<UserDto>>> GetAllUsers()
     {
         var users = await _userManager.Users.OrderByDescending(u => u.CreatedAt).ToListAsync();
-        return Ok(users.Select(MapToUserDto));
+        return Ok(users.Select(u => { var dto = MapToUserDto(u); dto.IsOnline = ChatHub.IsUserOnline(u.Id); return dto; }));
+    }
+
+    /// <summary>Admin: get online user IDs</summary>
+    [HttpGet("online-users")]
+    [Authorize(Roles = "Admin")]
+    public ActionResult<IEnumerable<string>> GetOnlineUsers()
+    {
+        return Ok(ChatHub.GetOnlineUserIds());
     }
 
     /// <summary>Admin: toggle user active status</summary>

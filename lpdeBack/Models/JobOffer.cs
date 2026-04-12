@@ -60,6 +60,14 @@ public class JobOffer
 
     public bool IsUrgent { get; set; } = false;
 
+    public bool IsFeatured { get; set; } = false;
+
+    [MaxLength(30)]
+    public string ModerationStatus { get; set; } = "Approved"; // Pending, Approved, Rejected
+
+    [MaxLength(500)]
+    public string? ModerationNote { get; set; }
+
     public int ViewCount { get; set; } = 0;
 
     // FK

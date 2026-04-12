@@ -80,6 +80,14 @@ public class ChatHub : Hub
         }
     }
 
+    public static IEnumerable<string> GetOnlineUserIds()
+    {
+        lock (_userConnections)
+        {
+            return _userConnections.Keys.ToList();
+        }
+    }
+
     public static IEnumerable<string> GetConnectionIds(string userId)
     {
         lock (_userConnections)

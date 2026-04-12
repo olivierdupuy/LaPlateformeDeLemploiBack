@@ -16,6 +16,10 @@ public class AppDbContext : IdentityDbContext<AppUser>
     public DbSet<Message> Messages => Set<Message>();
     public DbSet<CvSection> CvSections => Set<CvSection>();
     public DbSet<PushToken> PushTokens { get; set; }
+    public DbSet<JobNote> JobNotes => Set<JobNote>();
+    public DbSet<ActivityLog> ActivityLogs => Set<ActivityLog>();
+    public DbSet<PlatformSetting> PlatformSettings => Set<PlatformSetting>();
+    public DbSet<Announcement> Announcements => Set<Announcement>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -74,6 +78,36 @@ public class AppDbContext : IdentityDbContext<AppUser>
         {
             entity.HasOne(c => c.User).WithMany().HasForeignKey(c => c.UserId).OnDelete(DeleteBehavior.Cascade);
             entity.HasIndex(c => new { c.UserId, c.SectionType });
+        });
+
+        modelBuilder.Entity<JobNote>(entity =>
+        {
+            entity.HasOne(n => n.User).WithMany().HasForeignKey(n => n.UserId).OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne(n => n.JobOffer).WithMany().HasForeignKey(n => n.JobOfferId).OnDelete(DeleteBehavior.Cascade);
+            entity.HasIndex(n => new { n.UserId, n.JobOfferId }).IsUnique();
+        });
+
+        modelBuilder.Entity<ActivityLog>(entity =>
+        {
+            entity.HasOne(a => a.User).WithMany().HasForeignKey(a => a.UserId).OnDelete(DeleteBehavior.SetNull);
+            entity.HasIndex(a => a.CreatedAt);
+            entity.HasIndex(a => a.Action);
+        });
+
+        modelBuilder.Entity<PlatformSetting>(entity =>
+        {
+            entity.HasIndex(s => s.Key).IsUnique();
+        });
+
+        modelBuilder.Entity<Announcement>(entity =>
+        {
+            entity.HasOne(a => a.CreatedByUser).WithMany().HasForeignKey(a => a.CreatedByUserId).OnDelete(DeleteBehavior.SetNull);
+            entity.HasIndex(a => a.IsActive);
+        });
+
+        modelBuilder.Entity<JobOffer>(entity2 =>
+        {
+            entity2.HasIndex(e => e.ModerationStatus);
         });
     }
 }

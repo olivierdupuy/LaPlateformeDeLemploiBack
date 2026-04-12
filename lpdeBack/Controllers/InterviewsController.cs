@@ -38,7 +38,7 @@ public class InterviewsController : ControllerBase
 
         return Ok(interviews.Select(i => new {
             i.Id, i.ApplicationId, i.ProposedAt, i.Location, i.Notes, i.Status, i.CreatedAt,
-            i.Duration, i.Type, i.InterviewerName,
+            i.Duration, i.Type, i.InterviewerName, i.CandidateSlots, i.CandidateMessage,
             candidateName = i.Application.FullName,
             candidateId = i.Application.UserId,
             jobTitle = i.Application.JobOffer.Title,
@@ -98,7 +98,7 @@ public class InterviewsController : ControllerBase
         var isRecruiter = interview.Application.JobOffer.CreatedByUserId == userId;
         if (!IsAdmin() && !isCandidate && !isRecruiter) return Forbid();
 
-        var valid = new[] { "Proposed", "Accepted", "Declined", "Completed", "Cancelled" };
+        var valid = new[] { "Proposed", "Accepted", "Declined", "Completed", "Cancelled", "Negotiating" };
         if (!valid.Contains(dto.Status)) return BadRequest("Statut invalide.");
 
         interview.Status = dto.Status;

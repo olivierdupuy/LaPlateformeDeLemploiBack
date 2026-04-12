@@ -258,6 +258,18 @@ public class ApplicationsController : ControllerBase
         var alreadyApplied = await _context.Applications.AnyAsync(a => a.JobOfferId == dto.JobOfferId && a.UserId == userId);
         if (alreadyApplied) return BadRequest("Vous avez deja postule a cette offre.");
 
+        // Check max applications limit
+        var maxAppsStr = await _context.PlatformSettings
+            .Where(s => s.Key == "max_applications_per_candidate")
+            .Select(s => s.Value)
+            .FirstOrDefaultAsync();
+        if (int.TryParse(maxAppsStr, out var maxApps) && maxApps > 0)
+        {
+            var currentCount = await _context.Applications.CountAsync(a => a.UserId == userId);
+            if (currentCount >= maxApps)
+                return BadRequest($"Vous avez atteint la limite de {maxApps} candidatures. Veuillez attendre qu'une de vos candidatures soit traitee.");
+        }
+
         var app = new Application
         {
             JobOfferId = dto.JobOfferId,

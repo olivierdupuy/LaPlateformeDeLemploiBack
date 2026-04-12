@@ -3,6 +3,7 @@ using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using lpdeBack.Data;
 
@@ -11,9 +12,11 @@ using lpdeBack.Data;
 namespace lpdeBack.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260412193003_AdminFeatures")]
+    partial class AdminFeatures
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -526,14 +529,6 @@ namespace lpdeBack.Migrations
                     b.Property<int>("ApplicationId")
                         .HasColumnType("int");
 
-                    b.Property<string>("CandidateMessage")
-                        .HasMaxLength(500)
-                        .HasColumnType("nvarchar(500)");
-
-                    b.Property<string>("CandidateSlots")
-                        .HasMaxLength(500)
-                        .HasColumnType("nvarchar(500)");
-
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("datetime2");
 
@@ -569,42 +564,6 @@ namespace lpdeBack.Migrations
                     b.HasIndex("ApplicationId");
 
                     b.ToTable("Interviews");
-                });
-
-            modelBuilder.Entity("lpdeBack.Models.JobNote", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("int");
-
-                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
-
-                    b.Property<string>("Content")
-                        .IsRequired()
-                        .HasMaxLength(2000)
-                        .HasColumnType("nvarchar(2000)");
-
-                    b.Property<DateTime>("CreatedAt")
-                        .HasColumnType("datetime2");
-
-                    b.Property<int>("JobOfferId")
-                        .HasColumnType("int");
-
-                    b.Property<DateTime>("UpdatedAt")
-                        .HasColumnType("datetime2");
-
-                    b.Property<string>("UserId")
-                        .IsRequired()
-                        .HasColumnType("nvarchar(450)");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("JobOfferId");
-
-                    b.HasIndex("UserId", "JobOfferId")
-                        .IsUnique();
-
-                    b.ToTable("JobNotes");
                 });
 
             modelBuilder.Entity("lpdeBack.Models.JobOffer", b =>
@@ -884,9 +843,6 @@ namespace lpdeBack.Migrations
 
                     SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
 
-                    b.Property<bool>("AlertEnabled")
-                        .HasColumnType("bit");
-
                     b.Property<string>("Category")
                         .HasMaxLength(100)
                         .HasColumnType("nvarchar(100)");
@@ -904,9 +860,6 @@ namespace lpdeBack.Migrations
                     b.Property<string>("Label")
                         .HasMaxLength(200)
                         .HasColumnType("nvarchar(200)");
-
-                    b.Property<DateTime?>("LastAlertAt")
-                        .HasColumnType("datetime2");
 
                     b.Property<string>("Location")
                         .HasMaxLength(100)
@@ -1036,25 +989,6 @@ namespace lpdeBack.Migrations
                         .IsRequired();
 
                     b.Navigation("Application");
-                });
-
-            modelBuilder.Entity("lpdeBack.Models.JobNote", b =>
-                {
-                    b.HasOne("lpdeBack.Models.JobOffer", "JobOffer")
-                        .WithMany()
-                        .HasForeignKey("JobOfferId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.HasOne("lpdeBack.Models.AppUser", "User")
-                        .WithMany()
-                        .HasForeignKey("UserId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.Navigation("JobOffer");
-
-                    b.Navigation("User");
                 });
 
             modelBuilder.Entity("lpdeBack.Models.JobOffer", b =>

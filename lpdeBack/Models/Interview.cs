@@ -29,5 +29,11 @@ public class Interview
     [MaxLength(100)]
     public string? InterviewerName { get; set; }
 
+    [MaxLength(500)]
+    public string? CandidateSlots { get; set; } // JSON: proposed alternative slots by candidate
+
+    [MaxLength(500)]
+    public string? CandidateMessage { get; set; }
+
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 }

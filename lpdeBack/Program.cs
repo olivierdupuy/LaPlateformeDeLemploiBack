@@ -81,6 +81,7 @@ builder.Services.AddAuthorization();
 builder.Services.AddHttpClient();
 builder.Services.AddSignalR();
 builder.Services.AddScoped<lpdeBack.Services.PushNotificationService>();
+builder.Services.AddScoped<lpdeBack.Services.ActivityLogService>();
 
 builder.Services.AddCors(options =>
 {
@@ -112,6 +113,7 @@ if (app.Environment.IsDevelopment())
 
 app.UseStaticFiles();
 app.UseCors("AllowAngular");
+app.UseMiddleware<lpdeBack.Middleware.MaintenanceMiddleware>();
 app.UseAuthentication();
 app.UseAuthorization();
 app.MapHub<lpdeBack.Hubs.ChatHub>("/hubs/chat");
@@ -128,6 +130,25 @@ using (var scope = app.Services.CreateScope())
     var roleManager = services.GetRequiredService<RoleManager<IdentityRole>>();
 
     db.Database.Migrate();
+
+    // ── Fix existing offers: set ModerationStatus to Approved if empty ──
+    await db.Database.ExecuteSqlRawAsync(
+        "UPDATE JobOffers SET ModerationStatus = 'Approved' WHERE ModerationStatus IS NULL OR ModerationStatus = ''");
+
+    // ── Platform Settings (seed defaults) ──
+    if (!db.PlatformSettings.Any())
+    {
+        db.PlatformSettings.AddRange(
+            new PlatformSetting { Key = "maintenance_mode", Value = "false", Type = "bool", Description = "Active le mode maintenance" },
+            new PlatformSetting { Key = "default_offer_duration", Value = "30", Type = "int", Description = "Duree par defaut des offres (jours)" },
+            new PlatformSetting { Key = "max_applications_per_candidate", Value = "20", Type = "int", Description = "Nombre max de candidatures par candidat" },
+            new PlatformSetting { Key = "require_moderation", Value = "false", Type = "bool", Description = "Moderation obligatoire avant publication" },
+            new PlatformSetting { Key = "welcome_message", Value = "Bienvenue sur La Plateforme de l'Emploi !", Type = "string", Description = "Message d'accueil" },
+            new PlatformSetting { Key = "allow_registration", Value = "true", Type = "bool", Description = "Autoriser les nouvelles inscriptions" },
+            new PlatformSetting { Key = "contact_email", Value = "contact@laplateformedelemploi.com", Type = "string", Description = "Email de contact" }
+        );
+        await db.SaveChangesAsync();
+    }
 
     // ── Roles ──
     foreach (var role in new[] { "Admin", "Recruiter", "Candidate" })
