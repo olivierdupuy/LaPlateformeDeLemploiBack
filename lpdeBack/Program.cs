@@ -63,7 +63,9 @@ builder.Services.AddCors(options =>
                   "http://localhost:4200",
                   "http://localhost",
                   "https://localhost",
-                  "capacitor://localhost"
+                  "capacitor://localhost",
+                  "https://www.laplateformedelemploi.com",
+                  "https://laplateformedelemploi.com"
               )
               .AllowAnyHeader()
               .AllowAnyMethod();
