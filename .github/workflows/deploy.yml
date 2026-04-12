@@ -20,11 +20,11 @@ jobs:
           dotnet-version: ${{ env.DOTNET_VERSION }}
 
       - name: Restore dependencies
-        run: dotnet restore LaPlateformeDeLemploiAPI/LaPlateformeDeLemploiAPI.csproj
+        run: dotnet restore lpdeBack/lpdeBack.csproj
 
       - name: Publish
         run: |
-          dotnet publish LaPlateformeDeLemploiAPI/LaPlateformeDeLemploiAPI.csproj -c Release -o publish --no-restore
+          dotnet publish lpdeBack/lpdeBack.csproj -c Release -o publish --no-restore
 
       - name: Override connection string in appsettings
         shell: pwsh
