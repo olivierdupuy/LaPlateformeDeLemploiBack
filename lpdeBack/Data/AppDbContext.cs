@@ -17,6 +17,7 @@ public class AppDbContext : IdentityDbContext<AppUser>
     public DbSet<CvSection> CvSections => Set<CvSection>();
     public DbSet<PushToken> PushTokens { get; set; }
     public DbSet<JobNote> JobNotes => Set<JobNote>();
+    public DbSet<MessageTemplate> MessageTemplates => Set<MessageTemplate>();
     public DbSet<ActivityLog> ActivityLogs => Set<ActivityLog>();
     public DbSet<PlatformSetting> PlatformSettings => Set<PlatformSetting>();
     public DbSet<Announcement> Announcements => Set<Announcement>();
@@ -78,6 +79,11 @@ public class AppDbContext : IdentityDbContext<AppUser>
         {
             entity.HasOne(c => c.User).WithMany().HasForeignKey(c => c.UserId).OnDelete(DeleteBehavior.Cascade);
             entity.HasIndex(c => new { c.UserId, c.SectionType });
+        });
+
+        modelBuilder.Entity<MessageTemplate>(entity =>
+        {
+            entity.HasOne(t => t.User).WithMany().HasForeignKey(t => t.UserId).OnDelete(DeleteBehavior.Cascade);
         });
 
         modelBuilder.Entity<JobNote>(entity =>
