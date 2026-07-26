@@ -27,6 +27,7 @@ public class AppDbContext : IdentityDbContext<AppUser>
     public DbSet<CompanyQuestion> CompanyQuestions => Set<CompanyQuestion>();
     public DbSet<CompanyAnswer> CompanyAnswers => Set<CompanyAnswer>();
     public DbSet<CompanyFollow> CompanyFollows => Set<CompanyFollow>();
+    public DbSet<CompanyProfile> CompanyProfiles => Set<CompanyProfile>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {

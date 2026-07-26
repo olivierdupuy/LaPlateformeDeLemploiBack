@@ -190,11 +190,89 @@ public class CompanyReviewsController : ControllerBase
         var count = await _context.CompanyFollows.CountAsync(f => f.Company == name);
         return new { following = existing == null, count };
     }
+
+    // ═══ Fiche « À propos » ═══
+
+    [HttpGet("{company}/profile")]
+    public async Task<ActionResult<object>> GetProfile(string company)
+    {
+        var name = Uri.UnescapeDataString(company);
+        var p = await _context.CompanyProfiles.FirstOrDefaultAsync(x => x.Company == name);
+        var jobCount = await _context.JobOffers.CountAsync(j => j.Company == name && j.IsActive && j.ModerationStatus == "Approved");
+        return new
+        {
+            company = name,
+            foundedYear = p?.FoundedYear,
+            size = p?.Size,
+            industry = p?.Industry,
+            headquarters = p?.Headquarters,
+            website = p?.Website,
+            about = p?.About,
+            jobCount,
+        };
+    }
+
+    [HttpPut("{company}/profile")]
+    [Authorize(Roles = "Admin,Recruiter")]
+    public async Task<IActionResult> UpsertProfile(string company, CompanyProfileDto dto)
+    {
+        var name = Uri.UnescapeDataString(company);
+        var p = await _context.CompanyProfiles.FirstOrDefaultAsync(x => x.Company == name);
+        if (p == null)
+        {
+            p = new CompanyProfile { Company = name };
+            _context.CompanyProfiles.Add(p);
+        }
+        p.FoundedYear = dto.FoundedYear;
+        p.Size = dto.Size;
+        p.Industry = dto.Industry;
+        p.Headquarters = dto.Headquarters;
+        p.Website = dto.Website;
+        p.About = dto.About;
+        p.UpdatedByUserId = GetUserId();
+        p.UpdatedAt = DateTime.UtcNow;
+        await _context.SaveChangesAsync();
+        return Ok(new { message = "Fiche entreprise enregistrée." });
+    }
+
+    // ═══ Modération des avis (admin) ═══
+
+    [HttpGet("reviews/all")]
+    [Authorize(Roles = "Admin")]
+    public async Task<ActionResult<IEnumerable<object>>> GetAllReviews([FromQuery] string? status)
+    {
+        var query = _context.CompanyReviews.AsQueryable();
+        if (!string.IsNullOrWhiteSpace(status)) query = query.Where(r => r.Status == status);
+        return Ok(await query.OrderByDescending(r => r.CreatedAt)
+            .Select(r => new { r.Id, r.Company, r.OverallRating, r.Title, r.Body, r.JobTitle, r.Location, r.AuthorName, r.Status, r.CreatedAt })
+            .ToListAsync());
+    }
+
+    [HttpPatch("reviews/{id}/status")]
+    [Authorize(Roles = "Admin")]
+    public async Task<IActionResult> SetReviewStatus(int id, CompanyTextDto dto)
+    {
+        var review = await _context.CompanyReviews.FindAsync(id);
+        if (review == null) return NotFound();
+        if (!string.IsNullOrWhiteSpace(dto.Body)) review.Status = dto.Body;
+        await _context.SaveChangesAsync();
+        return NoContent();
+    }
 }
 
 public class CompanyTextDto
 {
     public string Body { get; set; } = string.Empty;
+}
+
+public class CompanyProfileDto
+{
+    public int? FoundedYear { get; set; }
+    public string? Size { get; set; }
+    public string? Industry { get; set; }
+    public string? Headquarters { get; set; }
+    public string? Website { get; set; }
+    public string? About { get; set; }
 }
 
 public class CompanyReviewCreateDto
