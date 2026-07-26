@@ -203,6 +203,41 @@ public class JobOffersController : ControllerBase
         return new { categories, locations, contractTypes };
     }
 
+    // Valeurs réellement présentes en base pour les filtres avancés,
+    // afin de n'afficher aucune option qui renverrait 0 résultat.
+    [HttpGet("filters")]
+    public async Task<ActionResult<object>> Filters()
+    {
+        var active = _context.JobOffers.Where(j => j.IsActive && j.ModerationStatus == "Approved");
+
+        var experiences = await active
+            .Where(j => j.ExperienceRequired != null && j.ExperienceRequired != "")
+            .Select(j => j.ExperienceRequired!).Distinct().ToListAsync();
+        var educations = await active
+            .Where(j => j.EducationLevel != null && j.EducationLevel != "")
+            .Select(j => j.EducationLevel!).Distinct().ToListAsync();
+        var workSchedules = await active
+            .Where(j => j.WorkSchedule != null && j.WorkSchedule != "")
+            .Select(j => j.WorkSchedule!).Distinct().ToListAsync();
+
+        // Les langues peuvent être stockées en liste "Anglais, Espagnol" → on éclate.
+        var rawLangs = await active
+            .Where(j => j.Languages != null && j.Languages != "")
+            .Select(j => j.Languages!).ToListAsync();
+        var languages = rawLangs
+            .SelectMany(s => s.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(x => x).ToList();
+
+        return new
+        {
+            experiences = experiences.OrderBy(x => x).ToList(),
+            educations = educations.OrderBy(x => x).ToList(),
+            workSchedules = workSchedules.OrderBy(x => x).ToList(),
+            languages,
+        };
+    }
+
     [HttpGet("companies")]
     public async Task<ActionResult<IEnumerable<object>>> GetCompanies()
     {

@@ -136,7 +136,8 @@ public class JobImportService
         //    L'API plafonne une même recherche à ~1150 résultats ; on balaie donc
         //    tous les départements pour dépasser cette limite. Plafond configurable.
         var list = new List<JobOffer>();
-        int cap = int.TryParse(_config["FranceTravail:MaxOffers"], out var m) ? m : 2000;
+        // Par défaut : le maximum possible. Réglable via FranceTravail:MaxOffers.
+        int cap = int.TryParse(_config["FranceTravail:MaxOffers"], out var m) && m > 0 ? m : 100_000;
         const string baseUrl = "https://api.francetravail.io/partenaire/offresdemploi/v2/offres/search";
 
         // Mappe une page de résultats ; renvoie le nombre d'éléments reçus (avant dédup).
@@ -183,6 +184,10 @@ public class JobImportService
                 var offer = BuildOffer(ext, "francetravail", title, company, location, StripHtml(Str(e, "description")),
                     contract, category, false, null, salary, ftUrl);
                 offer.Latitude = lat; offer.Longitude = lng;
+                offer.WorkSchedule = MapFtSchedule(Str(e, "dureeTravailLibelleConverti"));
+                offer.ExperienceRequired = MapFtExperience(Str(e, "experienceExige"));
+                offer.EducationLevel = MapFtEducation(e);
+                offer.Languages = MapFtLanguages(e);
                 list.Add(offer);
             }
             return received;
@@ -201,7 +206,8 @@ public class JobImportService
             foreach (var dept in FrenchDepartments)
             {
                 if (list.Count >= cap) break;
-                for (int start = 0; start < 600 && list.Count < cap; start += 150)
+                // On paginte chaque département jusqu'au plafond API (~1150).
+                for (int start = 0; start < 1150 && list.Count < cap; start += 150)
                 {
                     var got = await FetchPageAsync(dept, start);
                     if (got < 150) break;
@@ -290,6 +296,51 @@ public class JobImportService
         if (c is "CDD" or "MIS" or "SAI" or "TTI") return "CDD";
         if (l.Contains("libér") || l.Contains("franchis") || c is "LIB") return "Freelance";
         return "CDI";
+    }
+
+    // Horaires → vocabulaire des filtres ("Temps plein" / "Temps partiel").
+    private static string? MapFtSchedule(string? libelle)
+    {
+        if (string.IsNullOrWhiteSpace(libelle)) return null;
+        return libelle.ToLowerInvariant().Contains("partiel") ? "Temps partiel" : "Temps plein";
+    }
+
+    // experienceExige : D=Débutant, S=Souhaitée, E=Exigée → niveaux du filtre.
+    private static string? MapFtExperience(string? code) => (code ?? "").ToUpperInvariant() switch
+    {
+        "D" => "Junior",
+        "S" => "Intermediaire",
+        "E" => "Senior",
+        _ => null,
+    };
+
+    // formations[].niveauLibelle → niveaux du filtre.
+    private static string? MapFtEducation(JsonElement e)
+    {
+        if (!e.TryGetProperty("formations", out var fms) || fms.ValueKind != JsonValueKind.Array) return null;
+        foreach (var f in fms.EnumerateArray())
+        {
+            var nl = (Str(f, "niveauLibelle") ?? "").ToLowerInvariant();
+            if (nl.Contains("doctorat") || nl.Contains("bac+8") || nl.Contains("bac + 8")) return "Doctorat";
+            if (nl.Contains("bac+5") || nl.Contains("bac + 5")) return "Bac+5";
+            if (nl.Contains("bac+3") || nl.Contains("bac + 3")) return "Bac+3";
+            if (nl.Contains("bac+2") || nl.Contains("bac + 2")) return "Bac+2";
+            if (nl.Contains("bac")) return "Bac";
+        }
+        return null;
+    }
+
+    // langues[].libelle → liste "Anglais, Espagnol".
+    private static string? MapFtLanguages(JsonElement e)
+    {
+        if (!e.TryGetProperty("langues", out var lg) || lg.ValueKind != JsonValueKind.Array) return null;
+        var langs = lg.EnumerateArray()
+            .Select(x => Str(x, "libelle"))
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .Select(x => x!.Trim())
+            .Distinct()
+            .ToList();
+        return langs.Count > 0 ? string.Join(", ", langs) : null;
     }
 
     private static string MapCategory(string? c)
