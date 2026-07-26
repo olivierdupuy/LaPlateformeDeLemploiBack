@@ -132,48 +132,96 @@ public class JobImportService
         using var tokenDoc = JsonDocument.Parse(await tokenResp.Content.ReadAsStringAsync(ct));
         var token = tokenDoc.RootElement.GetProperty("access_token").GetString();
 
-        // 2) Recherche d'offres
-        var searchReq = new HttpRequestMessage(HttpMethod.Get,
-            "https://api.francetravail.io/partenaire/offresdemploi/v2/offres/search?range=0-149");
-        searchReq.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
-        var searchResp = await http.SendAsync(searchReq, ct);
-        if (!searchResp.IsSuccessStatusCode) { _logger.LogWarning("France Travail: recherche échouée ({Code})", searchResp.StatusCode); return new(); }
-
-        using var doc = JsonDocument.Parse(await searchResp.Content.ReadAsStringAsync(ct));
+        // 2) Recherche d'offres — paginée (150/appel) + balayage par département.
+        //    L'API plafonne une même recherche à ~1150 résultats ; on balaie donc
+        //    tous les départements pour dépasser cette limite. Plafond configurable.
         var list = new List<JobOffer>();
-        if (!doc.RootElement.TryGetProperty("resultats", out var results)) return list;
+        int cap = int.TryParse(_config["FranceTravail:MaxOffers"], out var m) ? m : 2000;
+        const string baseUrl = "https://api.francetravail.io/partenaire/offresdemploi/v2/offres/search";
 
-        foreach (var e in results.EnumerateArray())
+        // Mappe une page de résultats ; renvoie le nombre d'éléments reçus (avant dédup).
+        async Task<int> FetchPageAsync(string? dept, int start)
         {
-            var id = Str(e, "id");
-            if (id == null) continue;
-            var ext = "francetravail:" + id;
-            if (!seen.Add(ext)) continue;
+            var url = $"{baseUrl}?range={start}-{start + 149}" + (dept != null ? $"&departement={dept}" : "");
+            var req = new HttpRequestMessage(HttpMethod.Get, url);
+            req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+            var resp = await http.SendAsync(req, ct);
+            // 200 OK ou 206 Partial Content = succès ; 204 = plus de résultats.
+            if (!resp.IsSuccessStatusCode) { _logger.LogWarning("France Travail: page {Dept}/{Start} échouée ({Code})", dept, start, resp.StatusCode); return 0; }
+            var body = await resp.Content.ReadAsStringAsync(ct);
+            if (string.IsNullOrWhiteSpace(body)) return 0;
+            using var doc = JsonDocument.Parse(body);
+            if (!doc.RootElement.TryGetProperty("resultats", out var results)) return 0;
 
-            var title = Str(e, "intitule") ?? "Offre";
-            string company = e.TryGetProperty("entreprise", out var ent) ? (Str(ent, "nom") ?? "Entreprise") : "Entreprise";
-            string location = ""; double? lat = null, lng = null;
-            if (e.TryGetProperty("lieuTravail", out var lieu))
+            int received = 0;
+            foreach (var e in results.EnumerateArray())
             {
-                location = Str(lieu, "libelle") ?? "";
-                if (lieu.TryGetProperty("latitude", out var la) && la.ValueKind == JsonValueKind.Number) lat = la.GetDouble();
-                if (lieu.TryGetProperty("longitude", out var lo) && lo.ValueKind == JsonValueKind.Number) lng = lo.GetDouble();
+                received++;
+                var id = Str(e, "id");
+                if (id == null) continue;
+                var ext = "francetravail:" + id;
+                if (!seen.Add(ext)) continue;
+
+                var title = Str(e, "intitule") ?? "Offre";
+                string company = e.TryGetProperty("entreprise", out var ent) ? (Str(ent, "nom") ?? "Entreprise") : "Entreprise";
+                string location = ""; double? lat = null, lng = null;
+                if (e.TryGetProperty("lieuTravail", out var lieu))
+                {
+                    location = Str(lieu, "libelle") ?? "";
+                    if (lieu.TryGetProperty("latitude", out var la) && la.ValueKind == JsonValueKind.Number) lat = la.GetDouble();
+                    if (lieu.TryGetProperty("longitude", out var lo) && lo.ValueKind == JsonValueKind.Number) lng = lo.GetDouble();
+                }
+                string? salary = e.TryGetProperty("salaire", out var sal) ? NullIfEmpty(Str(sal, "libelle")) : null;
+                var contract = MapFtContract(Str(e, "typeContrat"), Str(e, "typeContratLibelle"));
+                var category = GuessCategory(title, new()) is "Autre" ? (Str(e, "romeLibelle") ?? "Autre") : GuessCategory(title, new());
+
+                string? ftUrl = null;
+                if (e.TryGetProperty("contact", out var contact)) ftUrl = Str(contact, "urlPostulation");
+                if (ftUrl == null && e.TryGetProperty("origineOffre", out var origine)) ftUrl = Str(origine, "urlOrigine");
+                ftUrl ??= $"https://candidat.francetravail.fr/offres/recherche/detail/{id}";
+
+                var offer = BuildOffer(ext, "francetravail", title, company, location, StripHtml(Str(e, "description")),
+                    contract, category, false, null, salary, ftUrl);
+                offer.Latitude = lat; offer.Longitude = lng;
+                list.Add(offer);
             }
-            string? salary = e.TryGetProperty("salaire", out var sal) ? NullIfEmpty(Str(sal, "libelle")) : null;
-            var contract = MapFtContract(Str(e, "typeContrat"), Str(e, "typeContratLibelle"));
-            var category = GuessCategory(title, new()) is "Autre" ? (Str(e, "romeLibelle") ?? "Autre") : GuessCategory(title, new());
-
-            string? ftUrl = null;
-            if (e.TryGetProperty("contact", out var contact)) ftUrl = Str(contact, "urlPostulation");
-            if (ftUrl == null && e.TryGetProperty("origineOffre", out var origine)) ftUrl = Str(origine, "urlOrigine");
-            ftUrl ??= $"https://candidat.francetravail.fr/offres/recherche/detail/{id}";
-
-            var offer = BuildOffer(ext, "francetravail", title, company, location, StripHtml(Str(e, "description")),
-                contract, category, false, null, salary, ftUrl);
-            offer.Latitude = lat; offer.Longitude = lng;
-            list.Add(offer);
+            return received;
         }
+
+        // a) Recherche nationale paginée (jusqu'au plafond API de ~1150).
+        for (int start = 0; start < 1150 && list.Count < cap; start += 150)
+        {
+            var got = await FetchPageAsync(null, start);
+            if (got < 150) break; // dernière page atteinte
+        }
+
+        // b) Balayage par département pour dépasser la limite d'une recherche unique.
+        if (list.Count < cap)
+        {
+            foreach (var dept in FrenchDepartments)
+            {
+                if (list.Count >= cap) break;
+                for (int start = 0; start < 600 && list.Count < cap; start += 150)
+                {
+                    var got = await FetchPageAsync(dept, start);
+                    if (got < 150) break;
+                }
+            }
+        }
+
+        _logger.LogInformation("France Travail: {Count} offres importées (plafond {Cap})", list.Count, cap);
         return list;
+    }
+
+    // Départements métropolitains (hors 20 → 2A/2B) + DOM.
+    private static readonly string[] FrenchDepartments = BuildDepartments();
+    private static string[] BuildDepartments()
+    {
+        var d = new List<string>();
+        for (int i = 1; i <= 95; i++) { if (i == 20) continue; d.Add(i.ToString("D2")); }
+        d.Add("2A"); d.Add("2B");
+        d.AddRange(new[] { "971", "972", "973", "974", "976" });
+        return d.ToArray();
     }
 
     // ── Construction & helpers ──
