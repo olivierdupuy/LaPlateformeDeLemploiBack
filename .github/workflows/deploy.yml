@@ -33,6 +33,10 @@ jobs:
           $appSettings.ConnectionStrings.DefaultConnection = "${{ secrets.DB_CONNECTION_STRING }}"
           $appSettings.OpenAI.ApiKey = "${{ secrets.OPENAI_API_KEY }}"
           if ($appSettings.Firebase) { $appSettings.Firebase.ServerKey = "${{ secrets.FIREBASE_SERVER_KEY }}" }
+          if ($appSettings.FranceTravail) {
+            $appSettings.FranceTravail.ClientId = "${{ secrets.FRANCETRAVAIL_CLIENT_ID }}"
+            $appSettings.FranceTravail.ClientSecret = "${{ secrets.FRANCETRAVAIL_CLIENT_SECRET }}"
+          }
           $appSettings | ConvertTo-Json -Depth 10 | Set-Content "publish/appsettings.json"
 
       - name: Deploy to IIS via WebDeploy
