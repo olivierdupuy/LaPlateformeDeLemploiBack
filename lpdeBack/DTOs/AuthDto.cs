@@ -72,6 +72,11 @@ public class UpdateProfileDto
     public bool? IsSearchable { get; set; }
 }
 
+public class GoogleSignInDto
+{
+    public string Credential { get; set; } = string.Empty;
+}
+
 public class ChangePasswordDto
 {
     [Required]
