@@ -286,6 +286,19 @@ public class ApplicationsController : ControllerBase
         _context.Applications.Add(app);
         await _context.SaveChangesAsync();
 
+        // Reponse automatique du recruteur au candidat (message dans la conversation)
+        if (!string.IsNullOrWhiteSpace(job.AutoReplyMessage) && job.CreatedByUserId != null)
+        {
+            _context.Messages.Add(new Message
+            {
+                SenderId = job.CreatedByUserId,
+                ReceiverId = userId,
+                ApplicationId = app.Id,
+                Content = job.AutoReplyMessage,
+            });
+            await _context.SaveChangesAsync();
+        }
+
         // Notification au recruteur
         if (job.CreatedByUserId != null)
         {

@@ -24,6 +24,7 @@ public class JobOfferCreateDto
     public bool IsUrgent { get; set; }
     public bool EasyApply { get; set; } = true;
     public string? ScreeningQuestions { get; set; }
+    public string? AutoReplyMessage { get; set; }
 }
 
 public class JobOfferUpdateDto : JobOfferCreateDto

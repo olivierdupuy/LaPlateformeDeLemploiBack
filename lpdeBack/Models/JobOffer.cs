@@ -73,6 +73,9 @@ public class JobOffer
     [MaxLength(2000)]
     public string? ScreeningQuestions { get; set; } // Questions de preselection (tableau JSON de chaines)
 
+    [MaxLength(500)]
+    public string? AutoReplyMessage { get; set; } // Reponse automatique envoyee au candidat a la reception de sa candidature
+
     // Geolocalisation (pour la recherche par rayon)
     public double? Latitude { get; set; }
 
