@@ -346,6 +346,40 @@ public class JobOffersController : ControllerBase
         return Ok(job);
     }
 
+    /// <summary>Recruteur/Admin : sponsoriser (mettre en avant) sa propre offre.</summary>
+    [HttpPatch("{id}/feature")]
+    [Authorize(Roles = "Admin,Recruiter")]
+    public async Task<ActionResult<object>> ToggleFeatureOwn(int id)
+    {
+        var job = await _context.JobOffers.FindAsync(id);
+        if (job == null) return NotFound();
+        if (!IsAdmin() && job.CreatedByUserId != GetUserId()) return Forbid();
+        job.IsFeatured = !job.IsFeatured;
+        await _context.SaveChangesAsync();
+        return new { isFeatured = job.IsFeatured };
+    }
+
+    /// <summary>Recruteur/Admin : statistiques d'une offre (vues, candidatures, conversion, statuts).</summary>
+    [HttpGet("{id}/stats")]
+    [Authorize(Roles = "Admin,Recruiter")]
+    public async Task<ActionResult<object>> GetOfferStats(int id)
+    {
+        var job = await _context.JobOffers.FindAsync(id);
+        if (job == null) return NotFound();
+        if (!IsAdmin() && job.CreatedByUserId != GetUserId()) return Forbid();
+
+        var apps = await _context.Applications.Where(a => a.JobOfferId == id).ToListAsync();
+        var byStatus = apps.GroupBy(a => a.Status).Select(g => new { label = g.Key, value = g.Count() }).ToList();
+        var thirty = DateTime.UtcNow.AddDays(-30);
+        var appsByDay = apps.Where(a => a.AppliedAt >= thirty)
+            .GroupBy(a => a.AppliedAt.Date)
+            .Select(g => new { label = g.Key.ToString("dd/MM"), value = g.Count() })
+            .OrderBy(x => x.label).ToList();
+        var conversion = job.ViewCount > 0 ? Math.Round((double)apps.Count / job.ViewCount * 100, 1) : 0;
+
+        return new { views = job.ViewCount, applications = apps.Count, isFeatured = job.IsFeatured, conversion, byStatus, appsByDay };
+    }
+
     [HttpGet("stats/detailed")]
     [Authorize(Roles = "Admin,Recruiter")]
     public async Task<ActionResult<object>> GetDetailedStats()

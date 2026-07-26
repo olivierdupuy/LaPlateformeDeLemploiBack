@@ -3,6 +3,7 @@ using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using lpdeBack.Data;
 
@@ -11,9 +12,11 @@ using lpdeBack.Data;
 namespace lpdeBack.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260726153142_SalaryContributions")]
+    partial class SalaryContributions
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -464,97 +467,6 @@ namespace lpdeBack.Migrations
                     b.HasIndex("UserId");
 
                     b.ToTable("Applications");
-                });
-
-            modelBuilder.Entity("lpdeBack.Models.CompanyAnswer", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("int");
-
-                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
-
-                    b.Property<string>("AuthorName")
-                        .HasMaxLength(120)
-                        .HasColumnType("nvarchar(120)");
-
-                    b.Property<string>("AuthorUserId")
-                        .HasColumnType("nvarchar(max)");
-
-                    b.Property<string>("Body")
-                        .IsRequired()
-                        .HasMaxLength(1000)
-                        .HasColumnType("nvarchar(1000)");
-
-                    b.Property<int>("CompanyQuestionId")
-                        .HasColumnType("int");
-
-                    b.Property<DateTime>("CreatedAt")
-                        .HasColumnType("datetime2");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("CompanyQuestionId");
-
-                    b.ToTable("CompanyAnswers");
-                });
-
-            modelBuilder.Entity("lpdeBack.Models.CompanyFollow", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("int");
-
-                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
-
-                    b.Property<string>("Company")
-                        .IsRequired()
-                        .HasMaxLength(100)
-                        .HasColumnType("nvarchar(100)");
-
-                    b.Property<DateTime>("CreatedAt")
-                        .HasColumnType("datetime2");
-
-                    b.Property<string>("UserId")
-                        .IsRequired()
-                        .HasColumnType("nvarchar(max)");
-
-                    b.HasKey("Id");
-
-                    b.ToTable("CompanyFollows");
-                });
-
-            modelBuilder.Entity("lpdeBack.Models.CompanyQuestion", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("int");
-
-                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
-
-                    b.Property<string>("AuthorName")
-                        .HasMaxLength(120)
-                        .HasColumnType("nvarchar(120)");
-
-                    b.Property<string>("AuthorUserId")
-                        .HasColumnType("nvarchar(max)");
-
-                    b.Property<string>("Body")
-                        .IsRequired()
-                        .HasMaxLength(500)
-                        .HasColumnType("nvarchar(500)");
-
-                    b.Property<string>("Company")
-                        .IsRequired()
-                        .HasMaxLength(100)
-                        .HasColumnType("nvarchar(100)");
-
-                    b.Property<DateTime>("CreatedAt")
-                        .HasColumnType("datetime2");
-
-                    b.HasKey("Id");
-
-                    b.ToTable("CompanyQuestions");
                 });
 
             modelBuilder.Entity("lpdeBack.Models.CompanyReview", b =>
@@ -1325,17 +1237,6 @@ namespace lpdeBack.Migrations
                     b.Navigation("User");
                 });
 
-            modelBuilder.Entity("lpdeBack.Models.CompanyAnswer", b =>
-                {
-                    b.HasOne("lpdeBack.Models.CompanyQuestion", "Question")
-                        .WithMany("Answers")
-                        .HasForeignKey("CompanyQuestionId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.Navigation("Question");
-                });
-
             modelBuilder.Entity("lpdeBack.Models.CvSection", b =>
                 {
                     b.HasOne("lpdeBack.Models.AppUser", "User")
@@ -1474,11 +1375,6 @@ namespace lpdeBack.Migrations
                     b.Navigation("Interviews");
 
                     b.Navigation("Messages");
-                });
-
-            modelBuilder.Entity("lpdeBack.Models.CompanyQuestion", b =>
-                {
-                    b.Navigation("Answers");
                 });
 
             modelBuilder.Entity("lpdeBack.Models.JobOffer", b =>

@@ -23,6 +23,10 @@ public class AppDbContext : IdentityDbContext<AppUser>
     public DbSet<Announcement> Announcements => Set<Announcement>();
     public DbSet<JobReport> JobReports => Set<JobReport>();
     public DbSet<CompanyReview> CompanyReviews => Set<CompanyReview>();
+    public DbSet<SalaryContribution> SalaryContributions => Set<SalaryContribution>();
+    public DbSet<CompanyQuestion> CompanyQuestions => Set<CompanyQuestion>();
+    public DbSet<CompanyAnswer> CompanyAnswers => Set<CompanyAnswer>();
+    public DbSet<CompanyFollow> CompanyFollows => Set<CompanyFollow>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
