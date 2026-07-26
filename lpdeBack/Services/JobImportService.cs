@@ -40,8 +40,17 @@ public class JobImportService
         try { toAdd.AddRange(await FetchFranceTravailAsync(seen, ct)); } catch (Exception e) { _logger.LogWarning(e, "Import France Travail échoué"); }
 
         if (toAdd.Count == 0) return 0;
-        _context.JobOffers.AddRange(toAdd);
-        await _context.SaveChangesAsync(ct);
+
+        // Insertion par lots : évite de saturer la mémoire / le suivi EF et de
+        // rendre le serveur indisponible sur les gros volumes (plusieurs milliers).
+        const int batch = 500;
+        for (int i = 0; i < toAdd.Count; i += batch)
+        {
+            var slice = toAdd.GetRange(i, Math.Min(batch, toAdd.Count - i));
+            _context.JobOffers.AddRange(slice);
+            await _context.SaveChangesAsync(ct);
+            foreach (var o in slice) _context.Entry(o).State = EntityState.Detached;
+        }
         _logger.LogInformation("Import: {Count} offres ajoutées.", toAdd.Count);
         return toAdd.Count;
     }

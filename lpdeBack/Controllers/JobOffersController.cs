@@ -44,8 +44,12 @@ public class JobOffersController : ControllerBase
         [FromQuery] string? benefits,
         [FromQuery] int? datePosted,
         [FromQuery] int? radius,
-        [FromQuery] string? sort)
+        [FromQuery] string? sort,
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 24)
     {
+        page = page < 1 ? 1 : page;
+        pageSize = pageSize is < 1 or > 100 ? 24 : pageSize;
         // Auto-expire offers past their expiration date
         await _context.JobOffers
             .Where(j => j.IsActive && j.ExpiresAt != null && j.ExpiresAt < DateTime.UtcNow)
@@ -112,15 +116,21 @@ public class JobOffersController : ControllerBase
             _ => query.OrderByDescending(j => j.IsFeatured).ThenByDescending(j => j.IsUrgent).ThenByDescending(j => j.CreatedAt),
         };
 
-        var results = await query.ToListAsync();
-
-        // Filtre par rayon (haversine) sur les offres geolocalisees
+        List<JobOffer> results;
         if (useRadius && center != null)
         {
-            results = results
+            // Rayon (haversine) : filtrage en mémoire, borné pour ne pas tout charger.
+            var candidates = await query.Take(3000).ToListAsync();
+            results = candidates
                 .Where(j => j.Latitude.HasValue && j.Longitude.HasValue
                     && lpdeBack.Services.GeoUtils.DistanceKm(center.Value.Lat, center.Value.Lng, j.Latitude.Value, j.Longitude.Value) <= radius!.Value)
+                .Skip((page - 1) * pageSize).Take(pageSize)
                 .ToList();
+        }
+        else
+        {
+            // Pagination côté SQL — indispensable avec un gros volume d'offres.
+            results = await query.Skip((page - 1) * pageSize).Take(pageSize).ToListAsync();
         }
 
         return results;
