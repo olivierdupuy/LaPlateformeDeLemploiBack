@@ -252,13 +252,34 @@ public class JobOffersController : ControllerBase
     }
 
     [HttpGet("companies")]
-    public async Task<ActionResult<IEnumerable<object>>> GetCompanies()
+    public async Task<ActionResult<IEnumerable<object>>> GetCompanies(
+        [FromQuery] string? search, [FromQuery] int page = 1, [FromQuery] int pageSize = 24)
     {
-        var companies = await _context.JobOffers
-            .Where(j => j.IsActive && j.ModerationStatus == "Approved")
+        page = page < 1 ? 1 : page;
+        pageSize = pageSize is < 1 or > 100 ? 24 : pageSize;
+
+        var active = _context.JobOffers.Where(j => j.IsActive && j.ModerationStatus == "Approved");
+        if (!string.IsNullOrWhiteSpace(search))
+            active = active.Where(j => j.Company.Contains(search));
+
+        // Agrégats scalaires uniquement (COUNT / COUNT DISTINCT / MIN) : une seule
+        // requête GROUP BY, sans matérialiser la liste des lieux par entreprise.
+        var grouped = active
             .GroupBy(j => j.Company)
-            .Select(g => new { company = g.Key, jobCount = g.Count(), locations = g.Select(j => j.Location).Distinct().ToList() })
-            .OrderByDescending(c => c.jobCount)
+            .Select(g => new
+            {
+                company = g.Key,
+                jobCount = g.Count(),
+                siteCount = g.Select(j => j.Location).Distinct().Count(),
+                location = g.Min(j => j.Location),
+            });
+
+        var total = await grouped.CountAsync();
+        Response.Headers["X-Total-Count"] = total.ToString();
+
+        var companies = await grouped
+            .OrderByDescending(c => c.jobCount).ThenBy(c => c.company)
+            .Skip((page - 1) * pageSize).Take(pageSize)
             .ToListAsync();
         return Ok(companies);
     }

@@ -47,6 +47,10 @@ public class AppDbContext : IdentityDbContext<AppUser>
             entity.HasIndex(e => e.Category);
             entity.HasIndex(e => e.ContractType);
             entity.HasIndex(e => e.IsActive);
+            entity.HasIndex(e => e.Company);
+            // Couvre le filtrage liste + regroupement par entreprise sur gros volume.
+            entity.HasIndex(e => new { e.IsActive, e.ModerationStatus, e.Company });
+            entity.HasIndex(e => e.ExternalId);
             entity.HasOne(j => j.CreatedByUser).WithMany().HasForeignKey(j => j.CreatedByUserId).OnDelete(DeleteBehavior.SetNull);
         });
 
