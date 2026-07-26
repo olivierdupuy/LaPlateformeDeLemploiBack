@@ -371,21 +371,31 @@ public class JobImportService
             .ToList();
         if (amounts.Count == 0) return (null, null);
 
-        double min = amounts.Min(), max = amounts.Max();
-
         // Nombre de mois de versement (13e/14e mois éventuel), défaut 12.
         double months = 12;
         var mm = Regex.Match(l, @"sur\s+(\d+(?:[.,]\d+)?)\s*mois");
         if (mm.Success && ParseNum(mm.Groups[1].Value) is double mv && mv is >= 12 and <= 16) months = mv;
 
-        double factor;
-        if (l.Contains("annuel")) factor = 1;
-        else if (l.Contains("mensuel")) factor = months;
-        else if (l.Contains("horaire")) factor = 35 * 52; // 35 h/sem légales
-        else factor = max >= 10000 ? 1 : max >= 500 ? months : 35 * 52; // période absente → ordre de grandeur
+        // Selon la période, seuls les montants dans une plage plausible sont retenus :
+        // certains libellés FT « horaire » contiennent un montant annexe aberrant.
+        double factor, lo, hi;
+        if (l.Contains("annuel")) { factor = 1; lo = 8_000; hi = 1_000_000; }
+        else if (l.Contains("mensuel")) { factor = months; lo = 400; hi = 30_000; }
+        else if (l.Contains("horaire")) { factor = 35 * 52; lo = 3; hi = 200; } // 35 h/sem légales
+        else
+        {
+            // Période absente : on déduit de l'ordre de grandeur du plus grand montant.
+            var big = amounts.Max();
+            if (big >= 10_000) { factor = 1; lo = 8_000; hi = 1_000_000; }
+            else if (big >= 500) { factor = months; lo = 400; hi = 30_000; }
+            else { factor = 35 * 52; lo = 3; hi = 200; }
+        }
 
-        int aMin = (int)Math.Round(min * factor);
-        int aMax = (int)Math.Round(max * factor);
+        var kept = amounts.Where(a => a >= lo && a <= hi).ToList();
+        if (kept.Count == 0) return (null, null);
+
+        int aMin = (int)Math.Round(kept.Min() * factor);
+        int aMax = (int)Math.Round(kept.Max() * factor);
         if (aMax < 1000 || aMin > 1_000_000) return (null, null); // garde-fou plausibilité
         return (aMin, aMax);
     }
@@ -394,15 +404,17 @@ public class JobImportService
         double.TryParse(s.Replace(',', '.'), NumberStyles.Any, CultureInfo.InvariantCulture, out var d) ? d : null;
 
     // Rétro-remplit le salaire chiffré des offres importées déjà en base (parcours par curseur d'Id).
-    public async Task<int> ReparseSalariesAsync(CancellationToken ct = default)
+    public async Task<int> ReparseSalariesAsync(bool force = false, CancellationToken ct = default)
     {
         int updated = 0, lastId = 0;
         const int take = 1000;
         while (!ct.IsCancellationRequested)
         {
+            // force = true : recalcule tout (corrige d'anciennes valeurs) ;
+            // sinon : ne traite que les offres sans salaire chiffré (rapide au démarrage).
             var batch = await _context.JobOffers
-                .Where(j => j.ExternalSource != null && j.MinSalary == null
-                    && j.Salary != null && j.Salary != "" && j.Id > lastId)
+                .Where(j => j.ExternalSource != null && j.Salary != null && j.Salary != ""
+                    && (force || j.MinSalary == null) && j.Id > lastId)
                 .OrderBy(j => j.Id).Take(take).ToListAsync(ct);
             if (batch.Count == 0) break;
             lastId = batch[^1].Id;
@@ -410,12 +422,13 @@ public class JobImportService
             {
                 var (min, max) = ParseFtSalary(j.Salary);
                 if (min.HasValue) { j.MinSalary = min; j.MaxSalary = max; updated++; }
+                else if (force) { j.MinSalary = null; j.MaxSalary = null; } // efface une ancienne valeur erronée
             }
             await _context.SaveChangesAsync(ct);
             foreach (var j in batch) _context.Entry(j).State = EntityState.Detached;
             if (batch.Count < take) break;
         }
-        _logger.LogInformation("Reparse salaires : {Updated} offres mises à jour.", updated);
+        _logger.LogInformation("Reparse salaires (force={Force}) : {Updated} offres mises à jour.", force, updated);
         return updated;
     }
 

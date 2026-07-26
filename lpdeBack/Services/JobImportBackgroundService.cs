@@ -39,7 +39,7 @@ public class JobImportBackgroundService : BackgroundService
         {
             using var scope = _scopeFactory.CreateScope();
             var svc = scope.ServiceProvider.GetRequiredService<JobImportService>();
-            var n = await svc.ReparseSalariesAsync(ct);
+            var n = await svc.ReparseSalariesAsync(force: false, ct);
             if (n > 0) _logger.LogInformation("Salaires chiffrés au démarrage : {N} offres.", n);
         }
         catch (Exception e)

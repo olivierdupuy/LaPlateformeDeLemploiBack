@@ -24,7 +24,7 @@ public class ImportController : ControllerBase
     [HttpPost("reparse-salaries")]
     public async Task<ActionResult<object>> ReparseSalaries()
     {
-        var n = await _svc.ReparseSalariesAsync(HttpContext.RequestAborted);
+        var n = await _svc.ReparseSalariesAsync(force: true, HttpContext.RequestAborted);
         return Ok(new { updated = n, message = $"{n} offre(s) mise(s) à jour avec un salaire chiffré." });
     }
 }
