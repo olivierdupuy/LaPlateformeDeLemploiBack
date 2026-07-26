@@ -125,6 +125,7 @@ public class AuthController : ControllerBase
         if (dto.City != null) user.City = dto.City;
         if (dto.LinkedInUrl != null) user.LinkedInUrl = dto.LinkedInUrl;
         if (dto.PortfolioUrl != null) user.PortfolioUrl = dto.PortfolioUrl;
+        if (dto.IsSearchable.HasValue) user.IsSearchable = dto.IsSearchable.Value;
 
         await _userManager.UpdateAsync(user);
         return Ok(MapToUserDto(user));
@@ -251,6 +252,7 @@ public class AuthController : ControllerBase
         City = user.City,
         LinkedInUrl = user.LinkedInUrl,
         PortfolioUrl = user.PortfolioUrl,
+        IsSearchable = user.IsSearchable,
         CreatedAt = user.CreatedAt
     };
 }

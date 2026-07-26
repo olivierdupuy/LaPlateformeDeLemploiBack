@@ -23,6 +23,7 @@ public class JobOfferCreateDto
     public string? CompanyDescription { get; set; }
     public bool IsUrgent { get; set; }
     public bool EasyApply { get; set; } = true;
+    public string? ScreeningQuestions { get; set; }
 }
 
 public class JobOfferUpdateDto : JobOfferCreateDto

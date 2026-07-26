@@ -17,7 +17,7 @@ public class CandidatesController : ControllerBase
     [Authorize(Roles = "Admin,Recruiter")]
     public async Task<ActionResult<IEnumerable<CandidatePublicDto>>> GetAll([FromQuery] string? search)
     {
-        var query = _context.Users.Where(u => u.Role == "Candidate" && u.IsActive).AsQueryable();
+        var query = _context.Users.Where(u => u.Role == "Candidate" && u.IsActive && u.IsSearchable).AsQueryable();
 
         if (!string.IsNullOrWhiteSpace(search))
             query = query.Where(u => u.FirstName.Contains(search) || u.LastName.Contains(search) || (u.Bio != null && u.Bio.Contains(search)));

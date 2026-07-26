@@ -279,6 +279,7 @@ public class ApplicationsController : ControllerBase
             CoverLetter = dto.CoverLetter,
             ResumeUrl = user.ResumeUrl,
             Source = string.IsNullOrWhiteSpace(dto.Source) ? "Plateforme" : dto.Source,
+            ScreeningAnswers = dto.ScreeningAnswers,
             UserId = userId
         };
 

@@ -70,6 +70,9 @@ public class JobOffer
 
     public bool EasyApply { get; set; } = true; // Candidature simplifiee (1 clic sur la plateforme)
 
+    [MaxLength(2000)]
+    public string? ScreeningQuestions { get; set; } // Questions de preselection (tableau JSON de chaines)
+
     // Geolocalisation (pour la recherche par rayon)
     public double? Latitude { get; set; }
 

@@ -666,6 +666,7 @@ public class JobOffersController : ControllerBase
             CompanyDescription = dto.CompanyDescription,
             IsUrgent = dto.IsUrgent,
             EasyApply = dto.EasyApply,
+            ScreeningQuestions = dto.ScreeningQuestions,
             CreatedByUserId = GetUserId(),
             ModerationStatus = needsReview ? "Pending" : "Approved",
             IsActive = !needsReview,
@@ -709,6 +710,7 @@ public class JobOffersController : ControllerBase
         job.CompanyDescription = dto.CompanyDescription;
         job.IsUrgent = dto.IsUrgent;
         job.EasyApply = dto.EasyApply;
+        job.ScreeningQuestions = dto.ScreeningQuestions;
         job.IsActive = dto.IsActive;
 
         // Re-geocodage du lieu (peut avoir change)
