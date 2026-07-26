@@ -36,6 +36,15 @@ public class ImportController : ControllerBase
         return Accepted(new { message = "Import lancé en arrière-plan. Les nouvelles offres apparaîtront dans quelques minutes." });
     }
 
+    /// <summary>Admin : diagnostic des sources d'import à clé (statut HTTP, nb de résultats).</summary>
+    [HttpGet("diagnostics")]
+    public async Task<ActionResult<object>> Diagnostics()
+    {
+        using var scope = _scopeFactory.CreateScope();
+        var svc = scope.ServiceProvider.GetRequiredService<JobImportService>();
+        return Ok(await svc.DiagnoseAsync(HttpContext.RequestAborted));
+    }
+
     /// <summary>Admin : rétro-remplir le salaire chiffré (annuel €) des offres importées.</summary>
     [HttpPost("reparse-salaries")]
     public async Task<ActionResult<object>> ReparseSalaries()

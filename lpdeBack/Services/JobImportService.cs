@@ -28,6 +28,50 @@ public class JobImportService
         _logger = logger;
     }
 
+    // Diagnostic : vérifie la configuration et la réponse des sources à clé (sans exposer les clés).
+    public async Task<object> DiagnoseAsync(CancellationToken ct = default)
+    {
+        var result = new Dictionary<string, object>();
+        var http = _httpFactory.CreateClient();
+
+        var aId = _config["Adzuna:AppId"]; var aKey = _config["Adzuna:AppKey"];
+        if (string.IsNullOrWhiteSpace(aId) || string.IsNullOrWhiteSpace(aKey))
+            result["adzuna"] = new { configured = false };
+        else
+        {
+            try
+            {
+                var country = _config["Adzuna:Country"] ?? "fr";
+                var url = $"https://api.adzuna.com/v1/api/jobs/{country}/search/1?app_id={aId}&app_key={aKey}&results_per_page=5&content-type=application/json";
+                var resp = await http.GetAsync(url, ct);
+                var body = await resp.Content.ReadAsStringAsync(ct);
+                int count = 0;
+                try { using var d = JsonDocument.Parse(body); if (d.RootElement.TryGetProperty("results", out var r)) count = r.GetArrayLength(); } catch { }
+                result["adzuna"] = new { configured = true, status = (int)resp.StatusCode, results = count, error = resp.IsSuccessStatusCode ? null : Trunc(body, 300) };
+            }
+            catch (Exception ex) { result["adzuna"] = new { configured = true, error = ex.Message }; }
+        }
+
+        var jKey = _config["Jooble:ApiKey"];
+        if (string.IsNullOrWhiteSpace(jKey))
+            result["jooble"] = new { configured = false };
+        else
+        {
+            try
+            {
+                var jbody = "{\"keywords\":\"\",\"location\":\"France\",\"page\":\"1\"}";
+                var req = new HttpRequestMessage(HttpMethod.Post, $"https://jooble.org/api/{jKey}") { Content = new StringContent(jbody, Encoding.UTF8, "application/json") };
+                var resp = await http.SendAsync(req, ct);
+                var body = await resp.Content.ReadAsStringAsync(ct);
+                int count = 0;
+                try { using var d = JsonDocument.Parse(body); if (d.RootElement.TryGetProperty("jobs", out var jj)) count = jj.GetArrayLength(); } catch { }
+                result["jooble"] = new { configured = true, status = (int)resp.StatusCode, jobs = count, error = resp.IsSuccessStatusCode ? null : Trunc(body, 300) };
+            }
+            catch (Exception ex) { result["jooble"] = new { configured = true, error = ex.Message }; }
+        }
+        return result;
+    }
+
     public async Task<int> ImportAllAsync(CancellationToken ct = default)
     {
         var existing = await _context.JobOffers
