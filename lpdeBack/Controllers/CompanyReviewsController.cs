@@ -257,6 +257,60 @@ public class CompanyReviewsController : ControllerBase
         return Ok(new { message = "Fiche entreprise enregistrée." });
     }
 
+    /// <summary>Lieux où l'entreprise recrute (avec compteur d'offres).</summary>
+    [HttpGet("{company}/locations")]
+    public async Task<ActionResult<IEnumerable<object>>> GetLocations(string company)
+    {
+        var name = Uri.UnescapeDataString(company);
+        return Ok(await _context.JobOffers
+            .Where(j => j.Company == name && j.IsActive && j.ModerationStatus == "Approved" && j.Location != "")
+            .GroupBy(j => j.Location)
+            .Select(g => new { location = g.Key, count = g.Count() })
+            .OrderByDescending(x => x.count)
+            .ToListAsync());
+    }
+
+    /// <summary>Salaires par poste dans l'entreprise (moyenne annuelle estimée).</summary>
+    [HttpGet("{company}/salaries")]
+    public async Task<ActionResult<IEnumerable<object>>> GetCompanySalaries(string company)
+    {
+        var name = Uri.UnescapeDataString(company);
+        var offers = await _context.JobOffers
+            .Where(j => j.Company == name && (j.MinSalary != null || j.MaxSalary != null))
+            .ToListAsync();
+
+        var roles = offers
+            .GroupBy(j => j.Title.Trim())
+            .Select(g =>
+            {
+                var vals = g.Select(j => j.MinSalary.HasValue && j.MaxSalary.HasValue
+                        ? (j.MinSalary!.Value + j.MaxSalary!.Value) / 2
+                        : (j.MinSalary ?? j.MaxSalary ?? 0))
+                    .Where(v => v > 0).ToList();
+                return new { title = g.Key, avgAnnual = vals.Count > 0 ? (int)vals.Average() : 0, count = g.Count() };
+            })
+            .Where(r => r.avgAnnual > 0)
+            .OrderByDescending(r => r.avgAnnual)
+            .Take(10)
+            .ToList();
+        return Ok(roles);
+    }
+
+    /// <summary>Autres entreprises du même secteur qui pourraient intéresser.</summary>
+    [HttpGet("{company}/similar")]
+    public async Task<ActionResult<IEnumerable<object>>> GetSimilar(string company)
+    {
+        var name = Uri.UnescapeDataString(company);
+        var cats = await _context.JobOffers.Where(j => j.Company == name).Select(j => j.Category).Distinct().ToListAsync();
+        return Ok(await _context.JobOffers
+            .Where(j => j.Company != name && j.IsActive && j.ModerationStatus == "Approved" && cats.Contains(j.Category))
+            .GroupBy(j => j.Company)
+            .Select(g => new { company = g.Key, jobCount = g.Count(), location = g.Select(j => j.Location).FirstOrDefault() })
+            .OrderByDescending(x => x.jobCount)
+            .Take(6)
+            .ToListAsync());
+    }
+
     // ═══ Modération des avis (admin) ═══
 
     [HttpGet("reviews/all")]
