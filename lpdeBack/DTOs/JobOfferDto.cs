@@ -18,11 +18,21 @@ public class JobOfferCreateDto
     public string? ExperienceRequired { get; set; }
     public string? EducationLevel { get; set; }
     public string? Benefits { get; set; }
+    public string? WorkSchedule { get; set; }
+    public string? Languages { get; set; }
     public string? CompanyDescription { get; set; }
     public bool IsUrgent { get; set; }
+    public bool EasyApply { get; set; } = true;
 }
 
 public class JobOfferUpdateDto : JobOfferCreateDto
 {
     public bool IsActive { get; set; } = true;
+}
+
+public class JobReportDto
+{
+    public string Reason { get; set; } = string.Empty;
+    public string? Details { get; set; }
+    public string? ReporterEmail { get; set; }
 }

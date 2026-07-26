@@ -55,12 +55,25 @@ public class JobOffer
     [MaxLength(1000)]
     public string? Benefits { get; set; } // Avantages (virgules) : Teletravail, Tickets resto, RTT...
 
+    [MaxLength(50)]
+    public string? WorkSchedule { get; set; } // Horaires : Temps plein, Temps partiel, Journee, Nuit, Week-end
+
+    [MaxLength(200)]
+    public string? Languages { get; set; } // Langues demandees (virgules) : Francais, Anglais, Allemand...
+
     [MaxLength(1000)]
     public string? CompanyDescription { get; set; }
 
     public bool IsUrgent { get; set; } = false;
 
     public bool IsFeatured { get; set; } = false;
+
+    public bool EasyApply { get; set; } = true; // Candidature simplifiee (1 clic sur la plateforme)
+
+    // Geolocalisation (pour la recherche par rayon)
+    public double? Latitude { get; set; }
+
+    public double? Longitude { get; set; }
 
     [MaxLength(30)]
     public string ModerationStatus { get; set; } = "Approved"; // Pending, Approved, Rejected

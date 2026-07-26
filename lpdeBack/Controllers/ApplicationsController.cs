@@ -278,6 +278,7 @@ public class ApplicationsController : ControllerBase
             Phone = dto.Phone ?? user.PhoneNumber,
             CoverLetter = dto.CoverLetter,
             ResumeUrl = user.ResumeUrl,
+            Source = string.IsNullOrWhiteSpace(dto.Source) ? "Plateforme" : dto.Source,
             UserId = userId
         };
 

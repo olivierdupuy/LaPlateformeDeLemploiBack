@@ -8,6 +8,7 @@ public class ApplicationCreateDto
     public string? Phone { get; set; }
     public string? CoverLetter { get; set; }
     public string? ResumeUrl { get; set; }
+    public string? Source { get; set; }
 }
 
 public class ApplicationUpdateStatusDto
