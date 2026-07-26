@@ -289,6 +289,9 @@ public class ApplicationsController : ControllerBase
         var job = await _context.JobOffers.FirstOrDefaultAsync(j => j.Id == dto.JobOfferId && j.IsActive);
         if (job == null) return BadRequest("Offre introuvable ou inactive.");
 
+        if (!string.IsNullOrEmpty(job.ExternalSource))
+            return BadRequest(new { message = "Cette offre provient d'un site partenaire. Postulez directement sur le site d'origine." });
+
         var alreadyApplied = await _context.Applications.AnyAsync(a => a.JobOfferId == dto.JobOfferId && a.UserId == userId);
         if (alreadyApplied) return BadRequest("Vous avez deja postule a cette offre.");
 

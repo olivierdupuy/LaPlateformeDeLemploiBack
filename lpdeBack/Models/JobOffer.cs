@@ -95,6 +95,9 @@ public class JobOffer
     [MaxLength(50)]
     public string? ExternalSource { get; set; } // arbeitnow, remotive, francetravail
 
+    [MaxLength(500)]
+    public string? ExternalUrl { get; set; } // URL de l'offre sur le site source (pour postuler)
+
     // FK
     public string? CreatedByUserId { get; set; }
     public AppUser? CreatedByUser { get; set; }

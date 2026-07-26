@@ -72,7 +72,7 @@ public class JobImportService
             list.Add(BuildOffer(ext, "arbeitnow", title, Str(e, "company_name") ?? "Entreprise",
                 Str(e, "location") ?? (remote ? "Télétravail" : ""), StripHtml(Str(e, "description")),
                 MapContract(jobType), GuessCategory(title, tags), remote,
-                string.Join(", ", tags), null, null));
+                string.Join(", ", tags), null, Str(e, "url")));
         }
         return list;
     }
@@ -100,7 +100,7 @@ public class JobImportService
             list.Add(BuildOffer(ext, "remotive", title, Str(e, "company_name") ?? "Entreprise",
                 Str(e, "candidate_required_location") ?? "Télétravail", StripHtml(Str(e, "description")),
                 MapContract(Str(e, "job_type")), GuessCategory(title, tags) is "Autre" ? MapCategory(Str(e, "category")) : GuessCategory(title, tags),
-                true, string.Join(", ", tags), NullIfEmpty(Str(e, "salary")), null));
+                true, string.Join(", ", tags), NullIfEmpty(Str(e, "salary")), Str(e, "url")));
         }
         return list;
     }
@@ -163,8 +163,13 @@ public class JobImportService
             var contract = MapFtContract(Str(e, "typeContrat"), Str(e, "typeContratLibelle"));
             var category = GuessCategory(title, new()) is "Autre" ? (Str(e, "romeLibelle") ?? "Autre") : GuessCategory(title, new());
 
+            string? ftUrl = null;
+            if (e.TryGetProperty("contact", out var contact)) ftUrl = Str(contact, "urlPostulation");
+            if (ftUrl == null && e.TryGetProperty("origineOffre", out var origine)) ftUrl = Str(origine, "urlOrigine");
+            ftUrl ??= $"https://candidat.francetravail.fr/offres/recherche/detail/{id}";
+
             var offer = BuildOffer(ext, "francetravail", title, company, location, StripHtml(Str(e, "description")),
-                contract, category, false, null, salary, null);
+                contract, category, false, null, salary, ftUrl);
             offer.Latitude = lat; offer.Longitude = lng;
             list.Add(offer);
         }
@@ -173,13 +178,14 @@ public class JobImportService
 
     // ── Construction & helpers ──
     private JobOffer BuildOffer(string ext, string source, string title, string company, string location,
-        string description, string contract, string category, bool remote, string? tags, string? salary, string? _)
+        string description, string contract, string category, bool remote, string? tags, string? salary, string? externalUrl)
     {
         var geo = string.IsNullOrEmpty(location) ? null : GeoUtils.Geocode(location);
         return new JobOffer
         {
             ExternalId = ext,
             ExternalSource = source,
+            ExternalUrl = externalUrl != null ? Trunc(externalUrl, 500) : null,
             Title = Trunc(title, 200),
             Company = Trunc(company, 100),
             Location = Trunc(location, 100),

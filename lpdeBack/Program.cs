@@ -151,6 +151,25 @@ using (var scope = app.Services.CreateScope())
         await db.SaveChangesAsync();
     }
 
+    // ── Backfill: URL source des offres importées (pour postuler sur le site d'origine) ──
+    var noUrl = await db.JobOffers
+        .Where(j => j.ExternalSource != null && j.ExternalUrl == null && j.ExternalId != null)
+        .ToListAsync();
+    if (noUrl.Count > 0)
+    {
+        foreach (var j in noUrl)
+        {
+            var key = j.ExternalId!.Contains(':') ? j.ExternalId!.Split(':', 2)[1] : j.ExternalId!;
+            j.ExternalUrl = j.ExternalSource switch
+            {
+                "francetravail" => $"https://candidat.francetravail.fr/offres/recherche/detail/{key}",
+                "arbeitnow" => $"https://www.arbeitnow.com/view/{key}",
+                _ => "https://remotive.com/remote-jobs",
+            };
+        }
+        await db.SaveChangesAsync();
+    }
+
     // ── Platform Settings (seed defaults) ──
     if (!db.PlatformSettings.Any())
     {
