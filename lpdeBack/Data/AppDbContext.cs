@@ -21,6 +21,14 @@ public class AppDbContext : IdentityDbContext<AppUser>
     public DbSet<ActivityLog> ActivityLogs => Set<ActivityLog>();
     public DbSet<PlatformSetting> PlatformSettings => Set<PlatformSetting>();
     public DbSet<Announcement> Announcements => Set<Announcement>();
+    public DbSet<JobReport> JobReports => Set<JobReport>();
+    public DbSet<CompanyReview> CompanyReviews => Set<CompanyReview>();
+    public DbSet<SalaryContribution> SalaryContributions => Set<SalaryContribution>();
+    public DbSet<CompanyQuestion> CompanyQuestions => Set<CompanyQuestion>();
+    public DbSet<CompanyAnswer> CompanyAnswers => Set<CompanyAnswer>();
+    public DbSet<CompanyFollow> CompanyFollows => Set<CompanyFollow>();
+    public DbSet<CompanyProfile> CompanyProfiles => Set<CompanyProfile>();
+    public DbSet<JobEvent> JobEvents => Set<JobEvent>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {

@@ -244,6 +244,40 @@ public class ApplicationsController : ControllerBase
         return Ok(apps);
     }
 
+    /// <summary>Candidat : relancer le recruteur sur une candidature en attente.</summary>
+    [HttpPost("{id}/remind")]
+    [Authorize(Roles = "Candidate")]
+    public async Task<IActionResult> Remind(int id)
+    {
+        var userId = GetUserId();
+        var app = await _context.Applications.Include(a => a.JobOffer).FirstOrDefaultAsync(a => a.Id == id);
+        if (app == null) return NotFound();
+        if (app.UserId != userId) return Forbid();
+        if (app.Status != "Pending") return BadRequest(new { message = "Cette candidature a déjà été traitée." });
+
+        var recruiterId = app.JobOffer?.CreatedByUserId;
+        if (recruiterId == null) return BadRequest(new { message = "Recruteur introuvable." });
+
+        var recent = await _context.Messages.AnyAsync(m => m.ApplicationId == id && m.SenderId == userId && m.CreatedAt >= DateTime.UtcNow.AddDays(-7));
+        if (recent) return BadRequest(new { message = "Vous avez déjà relancé récemment. Patientez quelques jours." });
+
+        _context.Messages.Add(new Message
+        {
+            SenderId = userId!, ReceiverId = recruiterId, ApplicationId = id,
+            Content = $"Bonjour, je me permets de relancer concernant ma candidature au poste « {app.JobOffer!.Title} ». Restant à votre disposition pour tout complément.",
+        });
+        _context.Notifications.Add(new Notification
+        {
+            UserId = recruiterId,
+            Title = "Relance d'un candidat",
+            Message = $"{app.FullName} a relancé sa candidature à \"{app.JobOffer.Title}\".",
+            Link = "/messagerie",
+            Type = "Relance",
+        });
+        await _context.SaveChangesAsync();
+        return Ok(new { message = "Relance envoyée au recruteur." });
+    }
+
     [HttpPost]
     [Authorize(Roles = "Candidate")]
     public async Task<ActionResult<Application>> Create(ApplicationCreateDto dto)
@@ -278,11 +312,26 @@ public class ApplicationsController : ControllerBase
             Phone = dto.Phone ?? user.PhoneNumber,
             CoverLetter = dto.CoverLetter,
             ResumeUrl = user.ResumeUrl,
+            Source = string.IsNullOrWhiteSpace(dto.Source) ? "Plateforme" : dto.Source,
+            ScreeningAnswers = dto.ScreeningAnswers,
             UserId = userId
         };
 
         _context.Applications.Add(app);
         await _context.SaveChangesAsync();
+
+        // Reponse automatique du recruteur au candidat (message dans la conversation)
+        if (!string.IsNullOrWhiteSpace(job.AutoReplyMessage) && job.CreatedByUserId != null)
+        {
+            _context.Messages.Add(new Message
+            {
+                SenderId = job.CreatedByUserId,
+                ReceiverId = userId,
+                ApplicationId = app.Id,
+                Content = job.AutoReplyMessage,
+            });
+            await _context.SaveChangesAsync();
+        }
 
         // Notification au recruteur
         if (job.CreatedByUserId != null)

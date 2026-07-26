@@ -39,6 +39,11 @@ public class JobOffersController : ControllerBase
         [FromQuery] int? salaryMax,
         [FromQuery] string? experience,
         [FromQuery] string? education,
+        [FromQuery] string? workSchedule,
+        [FromQuery] string? languages,
+        [FromQuery] string? benefits,
+        [FromQuery] int? datePosted,
+        [FromQuery] int? radius,
         [FromQuery] string? sort)
     {
         // Auto-expire offers past their expiration date
@@ -60,7 +65,13 @@ public class JobOffersController : ControllerBase
         if (isRemote.HasValue)
             query = query.Where(j => j.IsRemote == isRemote.Value);
 
-        if (!string.IsNullOrWhiteSpace(location))
+        // Recherche par rayon : si un rayon + un lieu geocodable sont fournis, on filtre par distance
+        // (plus bas, apres materialisation) au lieu d'un simple Contains sur le libelle.
+        (double Lat, double Lng)? center = null;
+        var useRadius = radius.HasValue && radius.Value > 0 && !string.IsNullOrWhiteSpace(location);
+        if (useRadius) center = lpdeBack.Services.GeoUtils.Geocode(location);
+
+        if (!string.IsNullOrWhiteSpace(location) && !(useRadius && center != null))
             query = query.Where(j => j.Location.Contains(location));
 
         if (salaryMin.HasValue)
@@ -75,16 +86,44 @@ public class JobOffersController : ControllerBase
         if (!string.IsNullOrWhiteSpace(education))
             query = query.Where(j => j.EducationLevel == education);
 
+        if (!string.IsNullOrWhiteSpace(workSchedule))
+            query = query.Where(j => j.WorkSchedule == workSchedule);
+
+        if (!string.IsNullOrWhiteSpace(languages))
+            query = query.Where(j => j.Languages != null && j.Languages.Contains(languages));
+
+        if (!string.IsNullOrWhiteSpace(benefits))
+            query = query.Where(j => j.Benefits != null && j.Benefits.Contains(benefits));
+
+        if (datePosted.HasValue && datePosted.Value > 0)
+        {
+            var since = DateTime.UtcNow.AddDays(-datePosted.Value);
+            query = query.Where(j => j.CreatedAt >= since);
+        }
+
         // Sorting
         query = sort switch
         {
+            "date" => query.OrderByDescending(j => j.CreatedAt),
             "salary_asc" => query.OrderBy(j => j.MinSalary ?? 0),
             "salary_desc" => query.OrderByDescending(j => j.MaxSalary ?? 0),
             "views" => query.OrderByDescending(j => j.ViewCount),
-            _ => query.OrderByDescending(j => j.CreatedAt),
+            // "relevance" (defaut) : offres a la une puis urgentes puis recentes
+            _ => query.OrderByDescending(j => j.IsFeatured).ThenByDescending(j => j.IsUrgent).ThenByDescending(j => j.CreatedAt),
         };
 
-        return await query.ToListAsync();
+        var results = await query.ToListAsync();
+
+        // Filtre par rayon (haversine) sur les offres geolocalisees
+        if (useRadius && center != null)
+        {
+            results = results
+                .Where(j => j.Latitude.HasValue && j.Longitude.HasValue
+                    && lpdeBack.Services.GeoUtils.DistanceKm(center.Value.Lat, center.Value.Lng, j.Latitude.Value, j.Longitude.Value) <= radius!.Value)
+                .ToList();
+        }
+
+        return results;
     }
 
     [HttpGet("{id}")]
@@ -135,6 +174,35 @@ public class JobOffersController : ControllerBase
         return new { required = val == "true" };
     }
 
+    /// <summary>Donnees pour les pages de parcours (metiers, lieux, contrats) avec compteurs.</summary>
+    [HttpGet("browse")]
+    public async Task<ActionResult<object>> Browse()
+    {
+        var active = _context.JobOffers.Where(j => j.IsActive && j.ModerationStatus == "Approved");
+
+        var categories = await active
+            .GroupBy(j => j.Category)
+            .Select(g => new { label = g.Key, count = g.Count() })
+            .OrderByDescending(x => x.count)
+            .ToListAsync();
+
+        var locations = await active
+            .Where(j => j.Location != "")
+            .GroupBy(j => j.Location)
+            .Select(g => new { label = g.Key, count = g.Count() })
+            .OrderByDescending(x => x.count)
+            .Take(30)
+            .ToListAsync();
+
+        var contractTypes = await active
+            .GroupBy(j => j.ContractType)
+            .Select(g => new { label = g.Key, count = g.Count() })
+            .OrderByDescending(x => x.count)
+            .ToListAsync();
+
+        return new { categories, locations, contractTypes };
+    }
+
     [HttpGet("companies")]
     public async Task<ActionResult<IEnumerable<object>>> GetCompanies()
     {
@@ -156,21 +224,155 @@ public class JobOffersController : ControllerBase
             .ToListAsync();
     }
 
+    /// <summary>Autocompletion : suggestions de mots-cles (titres/entreprises) ou de lieux.</summary>
+    [HttpGet("suggest")]
+    public async Task<ActionResult<IEnumerable<string>>> Suggest([FromQuery] string? q, [FromQuery] string type = "keyword")
+    {
+        if (string.IsNullOrWhiteSpace(q) || q.Length < 2)
+            return Ok(Array.Empty<string>());
+
+        var active = _context.JobOffers.Where(j => j.IsActive && j.ModerationStatus == "Approved");
+
+        if (type == "location")
+        {
+            var locations = await active
+                .Where(j => j.Location.Contains(q))
+                .Select(j => j.Location)
+                .Distinct()
+                .OrderBy(l => l)
+                .Take(8)
+                .ToListAsync();
+            return Ok(locations);
+        }
+
+        // keyword : titres + entreprises
+        var titles = await active.Where(j => j.Title.Contains(q)).Select(j => j.Title).Distinct().Take(6).ToListAsync();
+        var companies = await active.Where(j => j.Company.Contains(q)).Select(j => j.Company).Distinct().Take(4).ToListAsync();
+        var suggestions = titles.Concat(companies).Distinct(StringComparer.OrdinalIgnoreCase).Take(8).ToList();
+        return Ok(suggestions);
+    }
+
+    /// <summary>Signaler une offre d'emploi (accessible sans authentification).</summary>
+    [HttpPost("{id}/report")]
+    [AllowAnonymous]
+    public async Task<IActionResult> Report(int id, JobReportDto dto)
+    {
+        if (string.IsNullOrWhiteSpace(dto.Reason))
+            return BadRequest(new { message = "Un motif est requis." });
+
+        var exists = await _context.JobOffers.AnyAsync(j => j.Id == id);
+        if (!exists) return NotFound();
+
+        var report = new JobReport
+        {
+            JobOfferId = id,
+            Reason = dto.Reason,
+            Details = dto.Details,
+            ReporterEmail = dto.ReporterEmail,
+            ReporterUserId = GetUserId(),
+        };
+        _context.JobReports.Add(report);
+        await _context.SaveChangesAsync();
+        return Ok(new { message = "Signalement enregistre. Merci." });
+    }
+
+    /// <summary>Admin : liste des signalements d'offres.</summary>
+    [HttpGet("reports")]
+    [Authorize(Roles = "Admin")]
+    public async Task<ActionResult<IEnumerable<object>>> GetReports([FromQuery] string? status)
+    {
+        var query = _context.JobReports.Include(r => r.JobOffer).AsQueryable();
+        if (!string.IsNullOrWhiteSpace(status))
+            query = query.Where(r => r.Status == status);
+
+        return Ok(await query
+            .OrderByDescending(r => r.CreatedAt)
+            .Select(r => new
+            {
+                r.Id, r.JobOfferId, r.Reason, r.Details, r.ReporterEmail, r.Status, r.CreatedAt,
+                jobTitle = r.JobOffer != null ? r.JobOffer.Title : null,
+                company = r.JobOffer != null ? r.JobOffer.Company : null,
+            })
+            .ToListAsync());
+    }
+
+    /// <summary>Admin : mettre a jour le statut d'un signalement.</summary>
+    [HttpPatch("reports/{reportId}")]
+    [Authorize(Roles = "Admin")]
+    public async Task<IActionResult> UpdateReport(int reportId, [FromBody] JobReportDto dto)
+    {
+        var report = await _context.JobReports.FindAsync(reportId);
+        if (report == null) return NotFound();
+        if (!string.IsNullOrWhiteSpace(dto.Reason)) report.Status = dto.Reason; // reutilise Reason comme nouveau statut
+        await _context.SaveChangesAsync();
+        return NoContent();
+    }
+
     // ── Protected endpoints (Recruiter / Admin) ──
 
     [HttpGet("mine")]
     [Authorize(Roles = "Admin,Recruiter")]
-    public async Task<ActionResult<IEnumerable<JobOffer>>> GetMyOffers()
+    public async Task<ActionResult<IEnumerable<JobOffer>>> GetMyOffers([FromQuery] string? scope)
     {
         var userId = GetUserId();
-        var query = IsAdmin()
-            ? _context.JobOffers.AsQueryable()
-            : _context.JobOffers.Where(j => j.CreatedByUserId == userId);
+        IQueryable<JobOffer> query;
+
+        if (IsAdmin())
+        {
+            query = _context.JobOffers.AsQueryable();
+        }
+        else if (scope == "team")
+        {
+            var me = await _userManager.FindByIdAsync(userId!);
+            if (!string.IsNullOrWhiteSpace(me?.Company))
+            {
+                var teamIds = await _userManager.Users.Where(u => u.Company == me.Company).Select(u => u.Id).ToListAsync();
+                query = _context.JobOffers.Where(j => j.CreatedByUserId != null && teamIds.Contains(j.CreatedByUserId));
+            }
+            else
+            {
+                query = _context.JobOffers.Where(j => j.CreatedByUserId == userId);
+            }
+        }
+        else
+        {
+            query = _context.JobOffers.Where(j => j.CreatedByUserId == userId);
+        }
 
         return await query
             .Include(j => j.Applications)
             .OrderByDescending(j => j.CreatedAt)
             .ToListAsync();
+    }
+
+    /// <summary>Coéquipiers de recrutement (recruteurs de la même entreprise) + nombre d'offres.</summary>
+    [HttpGet("team-members")]
+    [Authorize(Roles = "Admin,Recruiter")]
+    public async Task<ActionResult<object>> GetTeamMembers()
+    {
+        var userId = GetUserId();
+        var me = await _userManager.FindByIdAsync(userId!);
+        if (string.IsNullOrWhiteSpace(me?.Company)) return new { company = (string?)null, members = new object[0] };
+
+        var teammates = await _userManager.Users
+            .Where(u => u.Company == me.Company && (u.Role == "Recruiter" || u.Role == "Admin"))
+            .ToListAsync();
+        var ids = teammates.Select(u => u.Id).ToList();
+        var counts = await _context.JobOffers
+            .Where(j => j.CreatedByUserId != null && ids.Contains(j.CreatedByUserId))
+            .GroupBy(j => j.CreatedByUserId!)
+            .Select(g => new { userId = g.Key, count = g.Count() })
+            .ToListAsync();
+
+        var members = teammates.Select(u => new
+        {
+            name = $"{u.FirstName} {u.LastName}",
+            role = u.Role,
+            isMe = u.Id == userId,
+            offerCount = counts.FirstOrDefault(c => c.userId == u.Id)?.count ?? 0,
+        }).OrderByDescending(m => m.offerCount).ToList();
+
+        return new { company = me.Company, members };
     }
 
     [HttpPatch("{id}/renew")]
@@ -192,6 +394,40 @@ public class JobOffersController : ControllerBase
         job.ModerationStatus = "Approved"; // Renewal re-approves
         await _context.SaveChangesAsync();
         return Ok(job);
+    }
+
+    /// <summary>Recruteur/Admin : sponsoriser (mettre en avant) sa propre offre.</summary>
+    [HttpPatch("{id}/feature")]
+    [Authorize(Roles = "Admin,Recruiter")]
+    public async Task<ActionResult<object>> ToggleFeatureOwn(int id)
+    {
+        var job = await _context.JobOffers.FindAsync(id);
+        if (job == null) return NotFound();
+        if (!IsAdmin() && job.CreatedByUserId != GetUserId()) return Forbid();
+        job.IsFeatured = !job.IsFeatured;
+        await _context.SaveChangesAsync();
+        return new { isFeatured = job.IsFeatured };
+    }
+
+    /// <summary>Recruteur/Admin : statistiques d'une offre (vues, candidatures, conversion, statuts).</summary>
+    [HttpGet("{id}/stats")]
+    [Authorize(Roles = "Admin,Recruiter")]
+    public async Task<ActionResult<object>> GetOfferStats(int id)
+    {
+        var job = await _context.JobOffers.FindAsync(id);
+        if (job == null) return NotFound();
+        if (!IsAdmin() && job.CreatedByUserId != GetUserId()) return Forbid();
+
+        var apps = await _context.Applications.Where(a => a.JobOfferId == id).ToListAsync();
+        var byStatus = apps.GroupBy(a => a.Status).Select(g => new { label = g.Key, value = g.Count() }).ToList();
+        var thirty = DateTime.UtcNow.AddDays(-30);
+        var appsByDay = apps.Where(a => a.AppliedAt >= thirty)
+            .GroupBy(a => a.AppliedAt.Date)
+            .Select(g => new { label = g.Key.ToString("dd/MM"), value = g.Count() })
+            .OrderBy(x => x.label).ToList();
+        var conversion = job.ViewCount > 0 ? Math.Round((double)apps.Count / job.ViewCount * 100, 1) : 0;
+
+        return new { views = job.ViewCount, applications = apps.Count, isFeatured = job.IsFeatured, conversion, byStatus, appsByDay };
     }
 
     [HttpGet("stats/detailed")]
@@ -509,12 +745,21 @@ public class JobOffersController : ControllerBase
             ExperienceRequired = dto.ExperienceRequired,
             EducationLevel = dto.EducationLevel,
             Benefits = dto.Benefits,
+            WorkSchedule = dto.WorkSchedule,
+            Languages = dto.Languages,
             CompanyDescription = dto.CompanyDescription,
             IsUrgent = dto.IsUrgent,
+            EasyApply = dto.EasyApply,
+            ScreeningQuestions = dto.ScreeningQuestions,
+            AutoReplyMessage = dto.AutoReplyMessage,
             CreatedByUserId = GetUserId(),
             ModerationStatus = needsReview ? "Pending" : "Approved",
             IsActive = !needsReview,
         };
+
+        // Geocodage du lieu pour la recherche par rayon
+        var geo = lpdeBack.Services.GeoUtils.Geocode(job.Location);
+        if (geo != null) { job.Latitude = geo.Value.Lat; job.Longitude = geo.Value.Lng; }
 
         _context.JobOffers.Add(job);
         await _context.SaveChangesAsync();
@@ -545,9 +790,19 @@ public class JobOffersController : ControllerBase
         job.ExperienceRequired = dto.ExperienceRequired;
         job.EducationLevel = dto.EducationLevel;
         job.Benefits = dto.Benefits;
+        job.WorkSchedule = dto.WorkSchedule;
+        job.Languages = dto.Languages;
         job.CompanyDescription = dto.CompanyDescription;
         job.IsUrgent = dto.IsUrgent;
+        job.EasyApply = dto.EasyApply;
+        job.ScreeningQuestions = dto.ScreeningQuestions;
+        job.AutoReplyMessage = dto.AutoReplyMessage;
         job.IsActive = dto.IsActive;
+
+        // Re-geocodage du lieu (peut avoir change)
+        var geo = lpdeBack.Services.GeoUtils.Geocode(job.Location);
+        job.Latitude = geo?.Lat;
+        job.Longitude = geo?.Lng;
 
         // Re-submit to moderation if moderation is enabled (admin bypass)
         if (!IsAdmin())

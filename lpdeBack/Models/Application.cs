@@ -37,6 +37,9 @@ public class Application
     [MaxLength(100)]
     public string? Source { get; set; } // Plateforme, LinkedIn, Recommandation, Autre
 
+    [MaxLength(4000)]
+    public string? ScreeningAnswers { get; set; } // Reponses aux questions de preselection (JSON: [{question, answer}])
+
     public DateTime AppliedAt { get; set; } = DateTime.UtcNow;
 
     public string? UserId { get; set; }

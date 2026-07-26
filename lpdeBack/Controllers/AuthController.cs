@@ -125,6 +125,7 @@ public class AuthController : ControllerBase
         if (dto.City != null) user.City = dto.City;
         if (dto.LinkedInUrl != null) user.LinkedInUrl = dto.LinkedInUrl;
         if (dto.PortfolioUrl != null) user.PortfolioUrl = dto.PortfolioUrl;
+        if (dto.IsSearchable.HasValue) user.IsSearchable = dto.IsSearchable.Value;
 
         await _userManager.UpdateAsync(user);
         return Ok(MapToUserDto(user));
@@ -143,6 +144,45 @@ public class AuthController : ControllerBase
             return BadRequest(new { message = string.Join(" ", result.Errors.Select(e => e.Description)) });
 
         return Ok(new { message = "Mot de passe modifie avec succes." });
+    }
+
+    /// <summary>RGPD : export des données personnelles de l'utilisateur (JSON).</summary>
+    [HttpGet("export-data")]
+    [Authorize]
+    public async Task<IActionResult> ExportData()
+    {
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier)!;
+        var user = await _userManager.FindByIdAsync(userId);
+        if (user == null) return NotFound();
+
+        var applications = await _context.Applications.Where(a => a.UserId == userId)
+            .Select(a => new { a.Id, a.FullName, a.Email, a.Phone, a.Status, a.AppliedAt, a.CoverLetter }).ToListAsync();
+        var savedSearches = await _context.SavedSearches.Where(s => s.UserId == userId).ToListAsync();
+        var reviews = await _context.CompanyReviews.Where(r => r.AuthorUserId == userId)
+            .Select(r => new { r.Company, r.OverallRating, r.Title, r.Body, r.CreatedAt }).ToListAsync();
+
+        return Ok(new { profile = MapToUserDto(user), applications, savedSearches, reviews, exportedAt = DateTime.UtcNow });
+    }
+
+    /// <summary>RGPD : suppression du compte et des données personnelles associées.</summary>
+    [HttpDelete("account")]
+    [Authorize]
+    public async Task<IActionResult> DeleteAccount()
+    {
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier)!;
+        var user = await _userManager.FindByIdAsync(userId);
+        if (user == null) return NotFound();
+
+        _context.Applications.RemoveRange(_context.Applications.Where(a => a.UserId == userId));
+        _context.SavedSearches.RemoveRange(_context.SavedSearches.Where(s => s.UserId == userId));
+        _context.Notifications.RemoveRange(_context.Notifications.Where(n => n.UserId == userId));
+        _context.CvSections.RemoveRange(_context.CvSections.Where(c => c.UserId == userId));
+        _context.CompanyFollows.RemoveRange(_context.CompanyFollows.Where(f => f.UserId == userId));
+        _context.PushTokens.RemoveRange(_context.PushTokens.Where(p => p.UserId == userId));
+        await _context.SaveChangesAsync();
+
+        await _userManager.DeleteAsync(user);
+        return Ok(new { message = "Compte supprimé." });
     }
 
     /// <summary>Admin: list all users</summary>
@@ -191,6 +231,51 @@ public class AuthController : ControllerBase
         await _userManager.UpdateAsync(user);
 
         return Ok(MapToUserDto(user));
+    }
+
+    /// <summary>SSO : connexion via un jeton Google Identity (One Tap / bouton Google).</summary>
+    [HttpPost("google")]
+    [AllowAnonymous]
+    public async Task<ActionResult<AuthResponseDto>> GoogleSignIn(GoogleSignInDto dto)
+    {
+        if (string.IsNullOrWhiteSpace(dto.Credential))
+            return BadRequest(new { message = "Jeton Google manquant." });
+
+        // Vérifie le jeton d'identité auprès de Google
+        using var http = new HttpClient();
+        var resp = await http.GetAsync($"https://oauth2.googleapis.com/tokeninfo?id_token={Uri.EscapeDataString(dto.Credential)}");
+        if (!resp.IsSuccessStatusCode)
+            return Unauthorized(new { message = "Jeton Google invalide." });
+
+        using var doc = System.Text.Json.JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+        var root = doc.RootElement;
+
+        var email = root.TryGetProperty("email", out var e) ? e.GetString() : null;
+        if (string.IsNullOrEmpty(email))
+            return Unauthorized(new { message = "Email Google introuvable." });
+
+        // Vérifie l'audience si un Client ID est configuré
+        var clientId = _config["Google:ClientId"];
+        if (!string.IsNullOrEmpty(clientId) && root.TryGetProperty("aud", out var aud) && aud.GetString() != clientId)
+            return Unauthorized(new { message = "Application Google non autorisée." });
+
+        var user = await _userManager.FindByEmailAsync(email);
+        if (user == null)
+        {
+            var given = root.TryGetProperty("given_name", out var g) ? g.GetString() : "";
+            var family = root.TryGetProperty("family_name", out var f) ? f.GetString() : "";
+            user = new AppUser
+            {
+                UserName = email, Email = email, EmailConfirmed = true,
+                FirstName = given ?? "", LastName = family ?? "", Role = "Candidate",
+            };
+            var create = await _userManager.CreateAsync(user);
+            if (!create.Succeeded)
+                return BadRequest(new { message = "Création du compte impossible." });
+            await _userManager.AddToRoleAsync(user, "Candidate");
+        }
+
+        return Ok(GenerateAuthResponse(user));
     }
 
     // ── Helpers ──
@@ -251,6 +336,7 @@ public class AuthController : ControllerBase
         City = user.City,
         LinkedInUrl = user.LinkedInUrl,
         PortfolioUrl = user.PortfolioUrl,
+        IsSearchable = user.IsSearchable,
         CreatedAt = user.CreatedAt
     };
 }

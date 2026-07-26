@@ -332,6 +332,99 @@ public class CvController : ControllerBase
         }
     }
 
+    // ═══ Parse CV -> champs de profil (prefill) ═══
+
+    public class ProfileDraftDto
+    {
+        public string? Title { get; set; }
+        public string? Skills { get; set; }
+        public int? ExperienceYears { get; set; }
+        public string? Education { get; set; }
+        public string? City { get; set; }
+        public string? Bio { get; set; }
+    }
+
+    [HttpPost("parse-profile")]
+    public async Task<ActionResult<ProfileDraftDto>> ParseProfile(IFormFile file)
+    {
+        if (file == null || file.Length == 0)
+            return BadRequest(new { message = "Aucun fichier envoye." });
+        if (file.Length > 10 * 1024 * 1024)
+            return BadRequest(new { message = "Le fichier ne doit pas depasser 10 Mo." });
+
+        var ext = Path.GetExtension(file.FileName).ToLower();
+        if (ext != ".pdf" && ext != ".docx" && ext != ".doc")
+            return BadRequest(new { message = "Formats acceptes : PDF, DOCX, DOC." });
+
+        var apiKey = _config["OpenAI:ApiKey"];
+        if (string.IsNullOrEmpty(apiKey))
+            return StatusCode(503, new { message = "Cle API OpenAI non configuree." });
+
+        string extractedText;
+        try
+        {
+            using var memoryStream = new MemoryStream();
+            await file.CopyToAsync(memoryStream);
+            memoryStream.Position = 0;
+            extractedText = ext == ".pdf" ? ExtractTextFromPdf(memoryStream) : ExtractTextFromDocx(memoryStream);
+        }
+        catch (Exception ex)
+        {
+            return BadRequest(new { message = $"Impossible de lire le fichier : {ex.Message}" });
+        }
+
+        if (string.IsNullOrWhiteSpace(extractedText) || extractedText.Length < 50)
+            return BadRequest(new { message = "Le fichier ne contient pas assez de texte exploitable." });
+        if (extractedText.Length > 12000)
+            extractedText = extractedText[..12000];
+
+        var prompt = "A partir du CV ci-dessous, renvoie UNIQUEMENT un objet JSON (sans texte autour) avec ces cles : " +
+            "\"title\" (intitule de poste actuel ou recherche), \"skills\" (competences cles separees par des virgules), " +
+            "\"experienceYears\" (nombre entier d'annees d'experience, ou null), \"education\" (diplome le plus eleve), " +
+            "\"city\" (ville), \"bio\" (resume professionnel de 2-3 phrases a la premiere personne). " +
+            "Utilise null pour toute information absente.\n\nCV:\n" + extractedText;
+
+        try
+        {
+            var client = _httpClientFactory.CreateClient();
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
+            var requestBody = new
+            {
+                model = "gpt-4o-mini",
+                messages = new object[]
+                {
+                    new { role = "system", content = "Tu es un expert RH. Tu extrais des informations de profil depuis un CV et reponds UNIQUEMENT en JSON valide." },
+                    new { role = "user", content = prompt }
+                },
+                temperature = 0.2,
+                max_tokens = 800
+            };
+
+            var response = await client.PostAsJsonAsync("https://api.openai.com/v1/chat/completions", requestBody);
+            if (!response.IsSuccessStatusCode)
+                return StatusCode(502, new { message = $"Erreur API OpenAI: {response.StatusCode}" });
+
+            var json = await response.Content.ReadAsStringAsync();
+            using var doc = JsonDocument.Parse(json);
+            var content = doc.RootElement.GetProperty("choices")[0].GetProperty("message").GetProperty("content").GetString();
+            if (string.IsNullOrEmpty(content))
+                return StatusCode(502, new { message = "Reponse vide de l'IA." });
+
+            var start = content.IndexOf('{');
+            var end = content.LastIndexOf('}');
+            if (start < 0 || end <= start)
+                return BadRequest(new { message = "Impossible de parser la reponse de l'IA." });
+
+            var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+            var draft = JsonSerializer.Deserialize<ProfileDraftDto>(content[start..(end + 1)], options);
+            return Ok(draft ?? new ProfileDraftDto());
+        }
+        catch (Exception ex)
+        {
+            return StatusCode(500, new { message = "Erreur lors de l'analyse du profil.", detail = ex.Message });
+        }
+    }
+
     // ═══ Text extraction ═══
 
     private static string ExtractTextFromPdf(Stream stream)

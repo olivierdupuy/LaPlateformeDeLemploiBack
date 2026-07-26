@@ -135,6 +135,20 @@ using (var scope = app.Services.CreateScope())
     await db.Database.ExecuteSqlRawAsync(
         "UPDATE JobOffers SET ModerationStatus = 'Approved' WHERE ModerationStatus IS NULL OR ModerationStatus = ''");
 
+    // ── Backfill: geocode existing offers missing coordinates (recherche par rayon) ──
+    var toGeocode = await db.JobOffers
+        .Where(j => j.Latitude == null && j.Location != null && j.Location != "")
+        .ToListAsync();
+    if (toGeocode.Count > 0)
+    {
+        foreach (var j in toGeocode)
+        {
+            var geo = lpdeBack.Services.GeoUtils.Geocode(j.Location);
+            if (geo != null) { j.Latitude = geo.Value.Lat; j.Longitude = geo.Value.Lng; }
+        }
+        await db.SaveChangesAsync();
+    }
+
     // ── Platform Settings (seed defaults) ──
     if (!db.PlatformSettings.Any())
     {

@@ -68,6 +68,13 @@ public class UpdateProfileDto
 
     [MaxLength(300)]
     public string? PortfolioUrl { get; set; }
+
+    public bool? IsSearchable { get; set; }
+}
+
+public class GoogleSignInDto
+{
+    public string Credential { get; set; } = string.Empty;
 }
 
 public class ChangePasswordDto
@@ -104,6 +111,7 @@ public class UserDto
     public string? City { get; set; }
     public string? LinkedInUrl { get; set; }
     public string? PortfolioUrl { get; set; }
+    public bool IsSearchable { get; set; }
     public DateTime CreatedAt { get; set; }
     public bool IsOnline { get; set; }
 }

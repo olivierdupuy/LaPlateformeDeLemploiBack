@@ -50,4 +50,7 @@ public class AppUser : IdentityUser
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
     public bool IsActive { get; set; } = true;
+
+    /// <summary>Le candidat accepte d'apparaitre dans le vivier / d'etre trouve par les recruteurs.</summary>
+    public bool IsSearchable { get; set; } = true;
 }
