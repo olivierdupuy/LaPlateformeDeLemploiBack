@@ -22,6 +22,7 @@ public class AppDbContext : IdentityDbContext<AppUser>
     public DbSet<PlatformSetting> PlatformSettings => Set<PlatformSetting>();
     public DbSet<Announcement> Announcements => Set<Announcement>();
     public DbSet<JobReport> JobReports => Set<JobReport>();
+    public DbSet<CompanyReview> CompanyReviews => Set<CompanyReview>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
