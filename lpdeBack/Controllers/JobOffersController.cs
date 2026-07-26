@@ -260,7 +260,7 @@ public class JobOffersController : ControllerBase
 
         var active = _context.JobOffers.Where(j => j.IsActive && j.ModerationStatus == "Approved");
         if (!string.IsNullOrWhiteSpace(search))
-            active = active.Where(j => j.Company.Contains(search));
+            active = active.Where(j => j.Company.Contains(search) || j.Location.Contains(search));
 
         // Agrégats scalaires uniquement (COUNT / COUNT DISTINCT / MIN) : une seule
         // requête GROUP BY, sans matérialiser la liste des lieux par entreprise.
