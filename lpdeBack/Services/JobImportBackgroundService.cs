@@ -22,6 +22,7 @@ public class JobImportBackgroundService : BackgroundService
         catch (OperationCanceledException) { return; }
 
         await RunOnce(startupOnly: true, stoppingToken);
+        await ReparseSalaries(stoppingToken);
 
         using var timer = new PeriodicTimer(TimeSpan.FromHours(6));
         try
@@ -30,6 +31,21 @@ public class JobImportBackgroundService : BackgroundService
                 await RunOnce(startupOnly: false, stoppingToken);
         }
         catch (OperationCanceledException) { /* arrêt normal */ }
+    }
+
+    private async Task ReparseSalaries(CancellationToken ct)
+    {
+        try
+        {
+            using var scope = _scopeFactory.CreateScope();
+            var svc = scope.ServiceProvider.GetRequiredService<JobImportService>();
+            var n = await svc.ReparseSalariesAsync(ct);
+            if (n > 0) _logger.LogInformation("Salaires chiffrés au démarrage : {N} offres.", n);
+        }
+        catch (Exception e)
+        {
+            _logger.LogError(e, "Reparse salaires en échec");
+        }
     }
 
     private async Task RunOnce(bool startupOnly, CancellationToken ct)

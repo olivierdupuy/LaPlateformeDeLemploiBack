@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Net.Http.Headers;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -197,6 +198,8 @@ public class JobImportService
                 offer.ExperienceRequired = MapFtExperience(Str(e, "experienceExige"));
                 offer.EducationLevel = MapFtEducation(e);
                 offer.Languages = MapFtLanguages(e);
+                var (smin, smax) = ParseFtSalary(salary); // salaire chiffré (annuel €) pour filtres/tri
+                offer.MinSalary = smin; offer.MaxSalary = smax;
                 list.Add(offer);
             }
             return received;
@@ -256,7 +259,7 @@ public class JobImportService
             ContractType = contract,
             Category = Trunc(category, 100),
             IsRemote = remote,
-            Salary = salary != null ? Trunc(salary, 50) : null,
+            Salary = salary != null ? Trunc(salary, 120) : null,
             Tags = tags != null ? Trunc(tags, 500) : null,
             IsActive = true,
             ModerationStatus = "Approved",
@@ -350,6 +353,70 @@ public class JobImportService
             .Distinct()
             .ToList();
         return langs.Count > 0 ? string.Join(", ", langs) : null;
+    }
+
+    // Parse un libellé de salaire France Travail en fourchette ANNUELLE (€).
+    // Ex : "Mensuel de 1800.0 Euros à 2200.0 Euros sur 12.0 mois" -> (21600, 26400)
+    //      "Annuel de 30000.0 Euros sur 12.0 mois"               -> (30000, 30000)
+    //      "Horaire de 11.65 Euros à 13.0 Euros"                 -> (~21203, ~23660)
+    public static (int? Min, int? Max) ParseFtSalary(string? libelle)
+    {
+        if (string.IsNullOrWhiteSpace(libelle)) return (null, null);
+        var l = libelle.ToLowerInvariant();
+
+        // Montants suivis de "euro(s)" ou "€" (ignore "12 mois", "35 h", etc.).
+        var amounts = Regex.Matches(l, @"(\d+(?:[.,]\d+)?)\s*(?:euros?|€)")
+            .Select(mt => ParseNum(mt.Groups[1].Value))
+            .Where(d => d is > 0).Select(d => d!.Value)
+            .ToList();
+        if (amounts.Count == 0) return (null, null);
+
+        double min = amounts.Min(), max = amounts.Max();
+
+        // Nombre de mois de versement (13e/14e mois éventuel), défaut 12.
+        double months = 12;
+        var mm = Regex.Match(l, @"sur\s+(\d+(?:[.,]\d+)?)\s*mois");
+        if (mm.Success && ParseNum(mm.Groups[1].Value) is double mv && mv is >= 12 and <= 16) months = mv;
+
+        double factor;
+        if (l.Contains("annuel")) factor = 1;
+        else if (l.Contains("mensuel")) factor = months;
+        else if (l.Contains("horaire")) factor = 35 * 52; // 35 h/sem légales
+        else factor = max >= 10000 ? 1 : max >= 500 ? months : 35 * 52; // période absente → ordre de grandeur
+
+        int aMin = (int)Math.Round(min * factor);
+        int aMax = (int)Math.Round(max * factor);
+        if (aMax < 1000 || aMin > 1_000_000) return (null, null); // garde-fou plausibilité
+        return (aMin, aMax);
+    }
+
+    private static double? ParseNum(string s) =>
+        double.TryParse(s.Replace(',', '.'), NumberStyles.Any, CultureInfo.InvariantCulture, out var d) ? d : null;
+
+    // Rétro-remplit le salaire chiffré des offres importées déjà en base (parcours par curseur d'Id).
+    public async Task<int> ReparseSalariesAsync(CancellationToken ct = default)
+    {
+        int updated = 0, lastId = 0;
+        const int take = 1000;
+        while (!ct.IsCancellationRequested)
+        {
+            var batch = await _context.JobOffers
+                .Where(j => j.ExternalSource != null && j.MinSalary == null
+                    && j.Salary != null && j.Salary != "" && j.Id > lastId)
+                .OrderBy(j => j.Id).Take(take).ToListAsync(ct);
+            if (batch.Count == 0) break;
+            lastId = batch[^1].Id;
+            foreach (var j in batch)
+            {
+                var (min, max) = ParseFtSalary(j.Salary);
+                if (min.HasValue) { j.MinSalary = min; j.MaxSalary = max; updated++; }
+            }
+            await _context.SaveChangesAsync(ct);
+            foreach (var j in batch) _context.Entry(j).State = EntityState.Detached;
+            if (batch.Count < take) break;
+        }
+        _logger.LogInformation("Reparse salaires : {Updated} offres mises à jour.", updated);
+        return updated;
     }
 
     private static string MapCategory(string? c)

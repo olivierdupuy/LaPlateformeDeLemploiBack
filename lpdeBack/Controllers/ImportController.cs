@@ -19,4 +19,12 @@ public class ImportController : ControllerBase
         var n = await _svc.ImportAllAsync(HttpContext.RequestAborted);
         return Ok(new { imported = n, message = n > 0 ? $"{n} nouvelle(s) offre(s) importée(s)." : "Aucune nouvelle offre (déjà à jour)." });
     }
+
+    /// <summary>Admin : rétro-remplir le salaire chiffré (annuel €) des offres importées.</summary>
+    [HttpPost("reparse-salaries")]
+    public async Task<ActionResult<object>> ReparseSalaries()
+    {
+        var n = await _svc.ReparseSalariesAsync(HttpContext.RequestAborted);
+        return Ok(new { updated = n, message = $"{n} offre(s) mise(s) à jour avec un salaire chiffré." });
+    }
 }
