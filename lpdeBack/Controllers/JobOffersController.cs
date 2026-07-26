@@ -121,15 +121,18 @@ public class JobOffersController : ControllerBase
         {
             // Rayon (haversine) : filtrage en mémoire, borné pour ne pas tout charger.
             var candidates = await query.Take(3000).ToListAsync();
-            results = candidates
+            var matched = candidates
                 .Where(j => j.Latitude.HasValue && j.Longitude.HasValue
                     && lpdeBack.Services.GeoUtils.DistanceKm(center.Value.Lat, center.Value.Lng, j.Latitude.Value, j.Longitude.Value) <= radius!.Value)
-                .Skip((page - 1) * pageSize).Take(pageSize)
                 .ToList();
+            Response.Headers["X-Total-Count"] = matched.Count.ToString();
+            results = matched.Skip((page - 1) * pageSize).Take(pageSize).ToList();
         }
         else
         {
             // Pagination côté SQL — indispensable avec un gros volume d'offres.
+            var total = await query.CountAsync();
+            Response.Headers["X-Total-Count"] = total.ToString();
             results = await query.Skip((page - 1) * pageSize).Take(pageSize).ToListAsync();
         }
 

@@ -378,15 +378,16 @@ public class JobImportService
 
         // Selon la période, seuls les montants dans une plage plausible sont retenus :
         // certains libellés FT « horaire » contiennent un montant annexe aberrant.
+        // Plages plausibles (les données FT contiennent parfois des montants aberrants).
         double factor, lo, hi;
-        if (l.Contains("annuel")) { factor = 1; lo = 8_000; hi = 1_000_000; }
+        if (l.Contains("annuel")) { factor = 1; lo = 8_000; hi = 350_000; }
         else if (l.Contains("mensuel")) { factor = months; lo = 400; hi = 30_000; }
         else if (l.Contains("horaire")) { factor = 35 * 52; lo = 3; hi = 200; } // 35 h/sem légales
         else
         {
             // Période absente : on déduit de l'ordre de grandeur du plus grand montant.
             var big = amounts.Max();
-            if (big >= 10_000) { factor = 1; lo = 8_000; hi = 1_000_000; }
+            if (big >= 10_000) { factor = 1; lo = 8_000; hi = 350_000; }
             else if (big >= 500) { factor = months; lo = 400; hi = 30_000; }
             else { factor = 35 * 52; lo = 3; hi = 200; }
         }
