@@ -285,11 +285,18 @@ public class JobOffersController : ControllerBase
     }
 
     [HttpGet("company/{companyName}")]
-    public async Task<ActionResult<IEnumerable<JobOffer>>> GetByCompany(string companyName)
+    public async Task<ActionResult<IEnumerable<JobOffer>>> GetByCompany(string companyName,
+        [FromQuery] int page = 1, [FromQuery] int pageSize = 50)
     {
-        return await _context.JobOffers
-            .Where(j => j.IsActive && j.ModerationStatus == "Approved" && j.Company == companyName)
+        page = page < 1 ? 1 : page;
+        pageSize = pageSize is < 1 or > 100 ? 50 : pageSize;
+
+        var q = _context.JobOffers
+            .Where(j => j.IsActive && j.ModerationStatus == "Approved" && j.Company == companyName);
+        Response.Headers["X-Total-Count"] = (await q.CountAsync()).ToString();
+        return await q
             .OrderByDescending(j => j.CreatedAt)
+            .Skip((page - 1) * pageSize).Take(pageSize)
             .ToListAsync();
     }
 
