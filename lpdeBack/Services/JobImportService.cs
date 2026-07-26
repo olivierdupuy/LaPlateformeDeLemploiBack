@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Net.Http.Headers;
+using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Microsoft.EntityFrameworkCore;
@@ -39,6 +40,8 @@ public class JobImportService
         try { toAdd.AddRange(await FetchArbeitnowAsync(seen, ct)); } catch (Exception e) { _logger.LogWarning(e, "Import Arbeitnow échoué"); }
         try { toAdd.AddRange(await FetchRemotiveAsync(seen, ct)); } catch (Exception e) { _logger.LogWarning(e, "Import Remotive échoué"); }
         try { toAdd.AddRange(await FetchFranceTravailAsync(seen, ct)); } catch (Exception e) { _logger.LogWarning(e, "Import France Travail échoué"); }
+        try { toAdd.AddRange(await FetchAdzunaAsync(seen, ct)); } catch (Exception e) { _logger.LogWarning(e, "Import Adzuna échoué"); }
+        try { toAdd.AddRange(await FetchJoobleAsync(seen, ct)); } catch (Exception e) { _logger.LogWarning(e, "Import Jooble échoué"); }
 
         if (toAdd.Count == 0) return 0;
 
@@ -112,6 +115,117 @@ public class JobImportService
                 MapContract(Str(e, "job_type")), GuessCategory(title, tags) is "Autre" ? MapCategory(Str(e, "category")) : GuessCategory(title, tags),
                 true, string.Join(", ", tags), NullIfEmpty(Str(e, "salary")), Str(e, "url")));
         }
+        return list;
+    }
+
+    // ── Adzuna (agrégateur, si configuré : Adzuna:AppId / Adzuna:AppKey) ──
+    private async Task<List<JobOffer>> FetchAdzunaAsync(HashSet<string> seen, CancellationToken ct)
+    {
+        var appId = _config["Adzuna:AppId"];
+        var appKey = _config["Adzuna:AppKey"];
+        if (string.IsNullOrWhiteSpace(appId) || string.IsNullOrWhiteSpace(appKey))
+            return new List<JobOffer>(); // non configuré → ignoré
+
+        var country = _config["Adzuna:Country"] ?? "fr";
+        int maxPages = int.TryParse(_config["Adzuna:MaxPages"], out var mp) && mp > 0 ? mp : 20;
+        const int perPage = 50;
+
+        var http = _httpFactory.CreateClient();
+        var list = new List<JobOffer>();
+
+        for (int page = 1; page <= maxPages; page++)
+        {
+            var url = $"https://api.adzuna.com/v1/api/jobs/{country}/search/{page}"
+                + $"?app_id={appId}&app_key={appKey}&results_per_page={perPage}&content-type=application/json";
+            string json;
+            try { json = await http.GetStringAsync(url, ct); }
+            catch (Exception ex) { _logger.LogWarning(ex, "Adzuna page {Page} échouée", page); break; }
+
+            using var doc = JsonDocument.Parse(json);
+            if (!doc.RootElement.TryGetProperty("results", out var results) || results.GetArrayLength() == 0) break;
+
+            foreach (var e in results.EnumerateArray())
+            {
+                var id = e.TryGetProperty("id", out var idEl) ? (idEl.ValueKind == JsonValueKind.String ? idEl.GetString() : idEl.ToString()) : null;
+                if (id == null) continue;
+                var ext = "adzuna:" + id;
+                if (!seen.Add(ext)) continue;
+
+                var title = Str(e, "title") ?? "Offre";
+                string company = e.TryGetProperty("company", out var comp) ? (Str(comp, "display_name") ?? "Entreprise") : "Entreprise";
+                string location = e.TryGetProperty("location", out var loc) ? (Str(loc, "display_name") ?? "") : "";
+                string category = e.TryGetProperty("category", out var cat) ? (Str(cat, "label") ?? "Autre") : "Autre";
+                var contract = MapAdzunaContract(Str(e, "contract_time"), Str(e, "contract_type"));
+                var url2 = Str(e, "redirect_url");
+
+                var offer = BuildOffer(ext, "adzuna", title, company, location, StripHtml(Str(e, "description")),
+                    contract, GuessCategory(title, new()) is "Autre" ? category : GuessCategory(title, new()),
+                    false, null, null, url2);
+                offer.Latitude = Num(e, "latitude"); offer.Longitude = Num(e, "longitude");
+                var smin = Num(e, "salary_min"); var smax = Num(e, "salary_max");
+                if (smin.HasValue) offer.MinSalary = (int)Math.Round(smin.Value);
+                if (smax.HasValue) offer.MaxSalary = (int)Math.Round(smax.Value);
+                if (smin.HasValue || smax.HasValue)
+                    offer.Salary = Trunc($"{(smin ?? smax):n0} – {(smax ?? smin):n0} € / an", 120);
+                list.Add(offer);
+            }
+            if (results.GetArrayLength() < perPage) break; // dernière page
+        }
+        _logger.LogInformation("Adzuna : {Count} offres importées.", list.Count);
+        return list;
+    }
+
+    // ── Jooble (agrégateur, si configuré : Jooble:ApiKey) ──
+    private async Task<List<JobOffer>> FetchJoobleAsync(HashSet<string> seen, CancellationToken ct)
+    {
+        var apiKey = _config["Jooble:ApiKey"];
+        if (string.IsNullOrWhiteSpace(apiKey)) return new List<JobOffer>(); // non configuré → ignoré
+
+        var location = _config["Jooble:Location"] ?? "France";
+        var keywords = _config["Jooble:Keywords"] ?? "";
+        int maxPages = int.TryParse(_config["Jooble:MaxPages"], out var mp) && mp > 0 ? mp : 10;
+
+        var http = _httpFactory.CreateClient();
+        var list = new List<JobOffer>();
+
+        for (int page = 1; page <= maxPages; page++)
+        {
+            var body = $"{{\"keywords\":\"{keywords}\",\"location\":\"{location}\",\"page\":\"{page}\",\"ResultOnPage\":20}}";
+            var req = new HttpRequestMessage(HttpMethod.Post, $"https://jooble.org/api/{apiKey}")
+            {
+                Content = new StringContent(body, Encoding.UTF8, "application/json"),
+            };
+            HttpResponseMessage resp;
+            try { resp = await http.SendAsync(req, ct); }
+            catch (Exception ex) { _logger.LogWarning(ex, "Jooble page {Page} échouée", page); break; }
+            if (!resp.IsSuccessStatusCode) { _logger.LogWarning("Jooble: page {Page} ({Code})", page, resp.StatusCode); break; }
+
+            using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
+            if (!doc.RootElement.TryGetProperty("jobs", out var jobs) || jobs.GetArrayLength() == 0) break;
+
+            foreach (var e in jobs.EnumerateArray())
+            {
+                var link = Str(e, "link");
+                var id = e.TryGetProperty("id", out var idEl) && idEl.ValueKind != JsonValueKind.Null
+                    ? idEl.ToString()
+                    : (link != null ? Math.Abs(link.GetHashCode()).ToString() : null);
+                if (id == null) continue;
+                var ext = "jooble:" + id;
+                if (!seen.Add(ext)) continue;
+
+                var title = Str(e, "title") ?? "Offre";
+                var contract = MapContract(Str(e, "type"));
+                var (jmin, jmax) = ParseFtSalary(Str(e, "salary")); // même parseur (texte libre)
+
+                var offer = BuildOffer(ext, "jooble", title, NullIfEmpty(Str(e, "company")) ?? "Entreprise",
+                    Str(e, "location") ?? "", StripHtml(Str(e, "snippet")),
+                    contract, GuessCategory(title, new()), false, null, NullIfEmpty(Str(e, "salary")), link);
+                offer.MinSalary = jmin; offer.MaxSalary = jmax;
+                list.Add(offer);
+            }
+            if (jobs.GetArrayLength() < 20) break; // dernière page
+        }
+        _logger.LogInformation("Jooble : {Count} offres importées.", list.Count);
         return list;
     }
 
@@ -309,6 +423,21 @@ public class JobImportService
         if (l.Contains("libér") || l.Contains("franchis") || c is "LIB") return "Freelance";
         return "CDI";
     }
+
+    // Adzuna : contract_time (full_time/part_time) + contract_type (permanent/contract).
+    private static string MapAdzunaContract(string? time, string? type)
+    {
+        var ty = (type ?? "").ToLowerInvariant();
+        if (ty.Contains("contract")) return "CDD";
+        if (ty.Contains("permanent")) return "CDI";
+        var ti = (time ?? "").ToLowerInvariant();
+        if (ti.Contains("part")) return "CDD";
+        return "CDI";
+    }
+
+    // Lit une propriété numérique JSON (null si absente/non numérique).
+    private static double? Num(JsonElement e, string prop) =>
+        e.TryGetProperty(prop, out var v) && v.ValueKind == JsonValueKind.Number ? v.GetDouble() : null;
 
     // Horaires → vocabulaire des filtres ("Temps plein" / "Temps partiel").
     private static string? MapFtSchedule(string? libelle)

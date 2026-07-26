@@ -37,6 +37,8 @@ jobs:
             $appSettings.FranceTravail.ClientId = "${{ secrets.FRANCETRAVAIL_CLIENT_ID }}"
             $appSettings.FranceTravail.ClientSecret = "${{ secrets.FRANCETRAVAIL_CLIENT_SECRET }}"
           }
+          $appSettings | Add-Member -NotePropertyName Adzuna -NotePropertyValue ([pscustomobject]@{ AppId = "${{ secrets.ADZUNA_APP_ID }}"; AppKey = "${{ secrets.ADZUNA_APP_KEY }}"; Country = "fr"; MaxPages = 20 }) -Force
+          $appSettings | Add-Member -NotePropertyName Jooble -NotePropertyValue ([pscustomobject]@{ ApiKey = "${{ secrets.JOOBLE_API_KEY }}"; Location = "France"; MaxPages = 10 }) -Force
           $appSettings | ConvertTo-Json -Depth 10 | Set-Content "publish/appsettings.json"
 
       - name: Deploy to IIS via WebDeploy
