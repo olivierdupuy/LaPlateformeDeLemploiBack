@@ -44,7 +44,7 @@ public class JobImportService
                 var country = _config["Adzuna:Country"] ?? "fr";
                 var url = $"https://api.adzuna.com/v1/api/jobs/{country}/search/1?app_id={aId}&app_key={aKey}&results_per_page=5&content-type=application/json";
                 var resp = await http.GetAsync(url, ct);
-                var body = await resp.Content.ReadAsStringAsync(ct);
+                var body = Encoding.UTF8.GetString(await resp.Content.ReadAsByteArrayAsync(ct));
                 int count = 0;
                 try { using var d = JsonDocument.Parse(body); if (d.RootElement.TryGetProperty("results", out var r)) count = r.GetArrayLength(); } catch { }
                 result["adzuna"] = new { configured = true, status = (int)resp.StatusCode, results = count, error = resp.IsSuccessStatusCode ? null : Trunc(body, 300) };
@@ -215,7 +215,14 @@ public class JobImportService
             var url = $"https://api.adzuna.com/v1/api/jobs/{country}/search/{page}"
                 + $"?app_id={appId}&app_key={appKey}&results_per_page={perPage}&content-type=application/json";
             string json;
-            try { json = await http.GetStringAsync(url, ct); }
+            try
+            {
+                // Adzuna renvoie un charset invalide dans Content-Type : on lit les octets
+                // et on décode en UTF-8 nous-mêmes (GetStringAsync échouerait).
+                var resp = await http.GetAsync(url, ct);
+                if (!resp.IsSuccessStatusCode) { _logger.LogWarning("Adzuna page {Page} ({Code})", page, resp.StatusCode); break; }
+                json = Encoding.UTF8.GetString(await resp.Content.ReadAsByteArrayAsync(ct));
+            }
             catch (Exception ex) { _logger.LogWarning(ex, "Adzuna page {Page} échouée", page); break; }
 
             using var doc = JsonDocument.Parse(json);
