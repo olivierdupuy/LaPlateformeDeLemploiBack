@@ -34,6 +34,21 @@ public class AdminController : ControllerBase
     private string UserFullName() => $"{User.FindFirstValue(ClaimTypes.GivenName)} {User.FindFirstValue(ClaimTypes.Surname)}";
     private string? Ip() => HttpContext.Connection.RemoteIpAddress?.ToString();
 
+    // Entreprises fictives créées par le seed de démonstration.
+    private static readonly string[] SeedCompanies = { "TechCorp", "CreativeStudio", "CloudNine", "StartupFlow", "FinancePlus" };
+
+    /// <summary>Admin : supprime les offres de démonstration seedées (candidatures liées supprimées en cascade).</summary>
+    [HttpDelete("seed-offers")]
+    public async Task<ActionResult<object>> DeleteSeedOffers()
+    {
+        var seed = await _context.JobOffers
+            .Where(j => j.ExternalSource == null && SeedCompanies.Contains(j.Company))
+            .ToListAsync();
+        _context.JobOffers.RemoveRange(seed);
+        await _context.SaveChangesAsync();
+        return Ok(new { deleted = seed.Count, titles = seed.Select(o => o.Title), message = $"{seed.Count} offre(s) de démonstration supprimée(s)." });
+    }
+
     // ═══════════════════════════════════
     //  1. JOURNAL D'ACTIVITE
     // ═══════════════════════════════════
