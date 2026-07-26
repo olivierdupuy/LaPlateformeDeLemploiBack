@@ -49,6 +49,16 @@ public class AdminController : ControllerBase
         return Ok(new { deleted = seed.Count, titles = seed.Select(o => o.Title), message = $"{seed.Count} offre(s) de démonstration supprimée(s)." });
     }
 
+    /// <summary>Admin : supprime toutes les offres d'une source d'import (ex. "adzuna") pour les ré-importer.</summary>
+    [HttpDelete("offers-by-source/{source}")]
+    public async Task<ActionResult<object>> DeleteBySource(string source)
+    {
+        var toDelete = await _context.JobOffers.Where(j => j.ExternalSource == source).ToListAsync();
+        _context.JobOffers.RemoveRange(toDelete);
+        await _context.SaveChangesAsync();
+        return Ok(new { deleted = toDelete.Count, message = $"{toDelete.Count} offre(s) [{source}] supprimée(s)." });
+    }
+
     // ═══════════════════════════════════
     //  1. JOURNAL D'ACTIVITE
     // ═══════════════════════════════════

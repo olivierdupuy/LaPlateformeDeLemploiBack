@@ -246,11 +246,10 @@ public class JobImportService
                     contract, GuessCategory(title, new()) is "Autre" ? category : GuessCategory(title, new()),
                     false, null, null, url2);
                 offer.Latitude = Num(e, "latitude"); offer.Longitude = Num(e, "longitude");
-                var smin = Num(e, "salary_min"); var smax = Num(e, "salary_max");
-                if (smin.HasValue) offer.MinSalary = (int)Math.Round(smin.Value);
-                if (smax.HasValue) offer.MaxSalary = (int)Math.Round(smax.Value);
-                if (smin.HasValue || smax.HasValue)
-                    offer.Salary = Trunc($"{(smin ?? smax):n0} – {(smax ?? smin):n0} € / an", 120);
+                var (aMin, aMax) = NormalizeToAnnual(Num(e, "salary_min"), Num(e, "salary_max"));
+                offer.MinSalary = aMin; offer.MaxSalary = aMax;
+                if (aMin.HasValue || aMax.HasValue)
+                    offer.Salary = Trunc($"{(aMin ?? aMax):n0} – {(aMax ?? aMin):n0} € / an", 120);
                 list.Add(offer);
             }
             if (results.GetArrayLength() < perPage) break; // dernière page
@@ -616,6 +615,27 @@ public class JobImportService
 
     private static double? ParseNum(string s) =>
         double.TryParse(s.Replace(',', '.'), NumberStyles.Any, CultureInfo.InvariantCulture, out var d) ? d : null;
+
+    // Normalise une fourchette chiffrée (ex. Adzuna) en salaire ANNUEL (€).
+    // Adzuna renvoie parfois des montants horaires/mensuels : on déduit l'échelle
+    // de l'ordre de grandeur (basé sur le plus grand montant) et on l'applique
+    // au min et au max de façon cohérente.
+    private static (int? Min, int? Max) NormalizeToAnnual(double? smin, double? smax)
+    {
+        double basis = Math.Max(smin ?? 0, smax ?? 0);
+        if (basis <= 0) return (null, null);
+
+        double factor = basis >= 10_000 ? 1        // déjà annuel
+            : basis >= 500 ? 12                     // mensuel
+            : 35 * 52;                              // horaire (35 h/sem légales)
+
+        int? Conv(double? v) => v is > 0 ? (int)Math.Round(v.Value * factor) : (int?)null;
+        var aMin = Conv(smin);
+        var aMax = Conv(smax);
+        int hi = aMax ?? aMin ?? 0, lo = aMin ?? aMax ?? 0;
+        if (hi < 1000 || lo > 1_000_000) return (null, null); // garde-fou plausibilité
+        return (aMin, aMax);
+    }
 
     // Rétro-remplit le salaire chiffré des offres importées déjà en base (parcours par curseur d'Id).
     public async Task<int> ReparseSalariesAsync(bool force = false, CancellationToken ct = default)
