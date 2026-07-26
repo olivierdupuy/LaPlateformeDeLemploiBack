@@ -191,6 +191,28 @@ public class CompanyReviewsController : ControllerBase
         return new { following = existing == null, count };
     }
 
+    /// <summary>Activité d'une entreprise : recrutements récents + réactivité (public).</summary>
+    [HttpGet("{company}/activity")]
+    public async Task<ActionResult<object>> GetActivity(string company)
+    {
+        var name = Uri.UnescapeDataString(company);
+        var thirty = DateTime.UtcNow.AddDays(-30);
+        var sixty = DateTime.UtcNow.AddDays(-60);
+
+        var offerIds = await _context.JobOffers.Where(j => j.Company == name).Select(j => j.Id).ToListAsync();
+        if (offerIds.Count == 0) return new { hires30d = 0, responsive = false };
+
+        var hires30d = await _context.Applications
+            .CountAsync(a => offerIds.Contains(a.JobOfferId) && a.Status == "Accepted" && a.AppliedAt >= thirty);
+
+        var recent = await _context.Applications
+            .Where(a => offerIds.Contains(a.JobOfferId) && a.AppliedAt >= sixty)
+            .Select(a => a.Status).ToListAsync();
+        var responsive = recent.Count >= 3 && recent.Count(s => s != "Pending") >= recent.Count * 0.5;
+
+        return new { hires30d, responsive };
+    }
+
     // ═══ Fiche « À propos » ═══
 
     [HttpGet("{company}/profile")]
