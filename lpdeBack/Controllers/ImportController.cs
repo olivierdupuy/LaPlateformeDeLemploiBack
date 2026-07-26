@@ -9,22 +9,40 @@ namespace lpdeBack.Controllers;
 [Authorize(Roles = "Admin")]
 public class ImportController : ControllerBase
 {
-    private readonly JobImportService _svc;
-    public ImportController(JobImportService svc) => _svc = svc;
+    private readonly IServiceScopeFactory _scopeFactory;
+    private readonly ILogger<ImportController> _logger;
 
-    /// <summary>Admin : importer de vraies offres depuis les API publiques configurées.</summary>
-    [HttpPost("jobs")]
-    public async Task<ActionResult<object>> ImportJobs()
+    public ImportController(IServiceScopeFactory scopeFactory, ILogger<ImportController> logger)
     {
-        var n = await _svc.ImportAllAsync(HttpContext.RequestAborted);
-        return Ok(new { imported = n, message = n > 0 ? $"{n} nouvelle(s) offre(s) importée(s)." : "Aucune nouvelle offre (déjà à jour)." });
+        _scopeFactory = scopeFactory;
+        _logger = logger;
+    }
+
+    /// <summary>Admin : importer de vraies offres (lancé en arrière-plan pour éviter tout timeout).</summary>
+    [HttpPost("jobs")]
+    public IActionResult ImportJobs()
+    {
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                using var scope = _scopeFactory.CreateScope();
+                var svc = scope.ServiceProvider.GetRequiredService<JobImportService>();
+                var n = await svc.ImportAllAsync(CancellationToken.None);
+                _logger.LogInformation("Import admin terminé : {N} offres ajoutées.", n);
+            }
+            catch (Exception ex) { _logger.LogError(ex, "Import admin en échec"); }
+        });
+        return Accepted(new { message = "Import lancé en arrière-plan. Les nouvelles offres apparaîtront dans quelques minutes." });
     }
 
     /// <summary>Admin : rétro-remplir le salaire chiffré (annuel €) des offres importées.</summary>
     [HttpPost("reparse-salaries")]
     public async Task<ActionResult<object>> ReparseSalaries()
     {
-        var n = await _svc.ReparseSalariesAsync(force: true, HttpContext.RequestAborted);
+        using var scope = _scopeFactory.CreateScope();
+        var svc = scope.ServiceProvider.GetRequiredService<JobImportService>();
+        var n = await svc.ReparseSalariesAsync(force: true, HttpContext.RequestAborted);
         return Ok(new { updated = n, message = $"{n} offre(s) mise(s) à jour avec un salaire chiffré." });
     }
 }

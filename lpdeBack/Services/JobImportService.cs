@@ -45,18 +45,51 @@ public class JobImportService
 
         if (toAdd.Count == 0) return 0;
 
-        // Insertion par lots : évite de saturer la mémoire / le suivi EF et de
-        // rendre le serveur indisponible sur les gros volumes (plusieurs milliers).
+        // Insertion par lots, résiliente : si un lot échoue (une offre au format
+        // problématique), on réessaie offre par offre pour isoler et ignorer la
+        // mauvaise, sans faire échouer tout l'import.
         const int batch = 500;
+        int saved = 0, failed = 0;
         for (int i = 0; i < toAdd.Count; i += batch)
         {
             var slice = toAdd.GetRange(i, Math.Min(batch, toAdd.Count - i));
-            _context.JobOffers.AddRange(slice);
-            await _context.SaveChangesAsync(ct);
-            foreach (var o in slice) _context.Entry(o).State = EntityState.Detached;
+            try
+            {
+                _context.JobOffers.AddRange(slice);
+                await _context.SaveChangesAsync(ct);
+                foreach (var o in slice) _context.Entry(o).State = EntityState.Detached;
+                saved += slice.Count;
+            }
+            catch (Exception exBatch)
+            {
+                _logger.LogWarning(exBatch, "Lot d'import échoué ({Count} offres) — reprise unitaire", slice.Count);
+                DetachAll();
+                foreach (var o in slice)
+                {
+                    try
+                    {
+                        _context.JobOffers.Add(o);
+                        await _context.SaveChangesAsync(ct);
+                        _context.Entry(o).State = EntityState.Detached;
+                        saved++;
+                    }
+                    catch (Exception exOne)
+                    {
+                        DetachAll();
+                        failed++;
+                        _logger.LogWarning(exOne, "Offre ignorée [{Source}] {Ext} — {Title}", o.ExternalSource, o.ExternalId, o.Title);
+                    }
+                }
+            }
         }
-        _logger.LogInformation("Import: {Count} offres ajoutées.", toAdd.Count);
-        return toAdd.Count;
+        _logger.LogInformation("Import: {Saved} offres ajoutées, {Failed} ignorées.", saved, failed);
+        return saved;
+
+        void DetachAll()
+        {
+            foreach (var entry in _context.ChangeTracker.Entries().ToList())
+                entry.State = EntityState.Detached;
+        }
     }
 
     // ── Arbeitnow (gratuit, sans clé) ──
