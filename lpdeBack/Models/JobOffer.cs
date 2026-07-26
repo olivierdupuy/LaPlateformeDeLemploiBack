@@ -89,6 +89,12 @@ public class JobOffer
 
     public int ViewCount { get; set; } = 0;
 
+    [MaxLength(250)]
+    public string? ExternalId { get; set; } // Cle de dedup pour les offres importees (ex: "arbeitnow:slug")
+
+    [MaxLength(50)]
+    public string? ExternalSource { get; set; } // arbeitnow, remotive, francetravail
+
     // FK
     public string? CreatedByUserId { get; set; }
     public AppUser? CreatedByUser { get; set; }

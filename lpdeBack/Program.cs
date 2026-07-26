@@ -82,6 +82,8 @@ builder.Services.AddHttpClient();
 builder.Services.AddSignalR();
 builder.Services.AddScoped<lpdeBack.Services.PushNotificationService>();
 builder.Services.AddScoped<lpdeBack.Services.ActivityLogService>();
+builder.Services.AddScoped<lpdeBack.Services.JobImportService>();
+builder.Services.AddHostedService<lpdeBack.Services.JobImportBackgroundService>();
 
 builder.Services.AddCors(options =>
 {
