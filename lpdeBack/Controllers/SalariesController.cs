@@ -27,34 +27,40 @@ public class SalariesController : ControllerBase
     [HttpGet("roles")]
     public async Task<ActionResult<object>> GetRoles([FromQuery] string? sector, [FromQuery] string? q)
     {
-        var offers = await _context.JobOffers
-            .Where(j => j.IsActive && j.ModerationStatus == "Approved" && (j.MinSalary != null || j.MaxSalary != null))
+        // Regroupement effectué côté SQL (agrégats) : on ne matérialise que le top 60,
+        // pas les ~150k offres salariées.
+        var query = _context.JobOffers
+            .Where(j => j.IsActive && j.ModerationStatus == "Approved" && (j.MinSalary != null || j.MaxSalary != null));
+        if (!string.IsNullOrWhiteSpace(sector))
+            query = query.Where(j => j.Category == sector);
+        if (!string.IsNullOrWhiteSpace(q))
+            query = query.Where(j => j.Title.Contains(q));
+
+        var raw = await query
+            .GroupBy(j => j.Title)
+            .Select(g => new
+            {
+                title = g.Key,
+                category = g.Min(j => j.Category),
+                avg = g.Average(j => ((double)(j.MinSalary ?? j.MaxSalary ?? 0) + (double)(j.MaxSalary ?? j.MinSalary ?? 0)) / 2),
+                min = g.Min(j => j.MinSalary ?? j.MaxSalary ?? 0),
+                max = g.Max(j => j.MaxSalary ?? j.MinSalary ?? 0),
+                count = g.Count(),
+            })
+            .Where(r => r.avg > 0)
+            .OrderByDescending(r => r.avg)
+            .Take(60)
             .ToListAsync();
 
-        if (!string.IsNullOrWhiteSpace(sector))
-            offers = offers.Where(j => j.Category == sector).ToList();
-        if (!string.IsNullOrWhiteSpace(q))
-            offers = offers.Where(j => j.Title.Contains(q, StringComparison.OrdinalIgnoreCase)).ToList();
-
-        var roles = offers
-            .GroupBy(j => j.Title.Trim())
-            .Select(g =>
-            {
-                var vals = g.Select(AnnualOf).Where(v => v.HasValue).Select(v => v!.Value).ToList();
-                return new
-                {
-                    title = g.Key,
-                    category = g.Select(j => j.Category).FirstOrDefault(),
-                    avgAnnual = vals.Count > 0 ? (int)vals.Average() : 0,
-                    minAnnual = vals.Count > 0 ? vals.Min() : 0,
-                    maxAnnual = vals.Count > 0 ? vals.Max() : 0,
-                    count = g.Count(),
-                };
-            })
-            .Where(r => r.avgAnnual > 0)
-            .OrderByDescending(r => r.avgAnnual)
-            .Take(60)
-            .ToList();
+        var roles = raw.Select(r => new
+        {
+            title = r.title,
+            category = r.category,
+            avgAnnual = (int)Math.Round(r.avg),
+            minAnnual = r.min,
+            maxAnnual = r.max,
+            count = r.count,
+        });
 
         return new { roles };
     }

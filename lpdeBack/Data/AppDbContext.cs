@@ -48,6 +48,7 @@ public class AppDbContext : IdentityDbContext<AppUser>
             entity.HasIndex(e => e.ContractType);
             entity.HasIndex(e => e.IsActive);
             entity.HasIndex(e => e.Company);
+            entity.HasIndex(e => e.Title);
             // Couvre le filtrage liste + regroupement par entreprise sur gros volume.
             entity.HasIndex(e => new { e.IsActive, e.ModerationStatus, e.Company });
             entity.HasIndex(e => e.ExternalId);
