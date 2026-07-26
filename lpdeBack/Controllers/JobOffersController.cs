@@ -312,17 +312,67 @@ public class JobOffersController : ControllerBase
 
     [HttpGet("mine")]
     [Authorize(Roles = "Admin,Recruiter")]
-    public async Task<ActionResult<IEnumerable<JobOffer>>> GetMyOffers()
+    public async Task<ActionResult<IEnumerable<JobOffer>>> GetMyOffers([FromQuery] string? scope)
     {
         var userId = GetUserId();
-        var query = IsAdmin()
-            ? _context.JobOffers.AsQueryable()
-            : _context.JobOffers.Where(j => j.CreatedByUserId == userId);
+        IQueryable<JobOffer> query;
+
+        if (IsAdmin())
+        {
+            query = _context.JobOffers.AsQueryable();
+        }
+        else if (scope == "team")
+        {
+            var me = await _userManager.FindByIdAsync(userId!);
+            if (!string.IsNullOrWhiteSpace(me?.Company))
+            {
+                var teamIds = await _userManager.Users.Where(u => u.Company == me.Company).Select(u => u.Id).ToListAsync();
+                query = _context.JobOffers.Where(j => j.CreatedByUserId != null && teamIds.Contains(j.CreatedByUserId));
+            }
+            else
+            {
+                query = _context.JobOffers.Where(j => j.CreatedByUserId == userId);
+            }
+        }
+        else
+        {
+            query = _context.JobOffers.Where(j => j.CreatedByUserId == userId);
+        }
 
         return await query
             .Include(j => j.Applications)
             .OrderByDescending(j => j.CreatedAt)
             .ToListAsync();
+    }
+
+    /// <summary>Coéquipiers de recrutement (recruteurs de la même entreprise) + nombre d'offres.</summary>
+    [HttpGet("team-members")]
+    [Authorize(Roles = "Admin,Recruiter")]
+    public async Task<ActionResult<object>> GetTeamMembers()
+    {
+        var userId = GetUserId();
+        var me = await _userManager.FindByIdAsync(userId!);
+        if (string.IsNullOrWhiteSpace(me?.Company)) return new { company = (string?)null, members = new object[0] };
+
+        var teammates = await _userManager.Users
+            .Where(u => u.Company == me.Company && (u.Role == "Recruiter" || u.Role == "Admin"))
+            .ToListAsync();
+        var ids = teammates.Select(u => u.Id).ToList();
+        var counts = await _context.JobOffers
+            .Where(j => j.CreatedByUserId != null && ids.Contains(j.CreatedByUserId))
+            .GroupBy(j => j.CreatedByUserId!)
+            .Select(g => new { userId = g.Key, count = g.Count() })
+            .ToListAsync();
+
+        var members = teammates.Select(u => new
+        {
+            name = $"{u.FirstName} {u.LastName}",
+            role = u.Role,
+            isMe = u.Id == userId,
+            offerCount = counts.FirstOrDefault(c => c.userId == u.Id)?.count ?? 0,
+        }).OrderByDescending(m => m.offerCount).ToList();
+
+        return new { company = me.Company, members };
     }
 
     [HttpPatch("{id}/renew")]
