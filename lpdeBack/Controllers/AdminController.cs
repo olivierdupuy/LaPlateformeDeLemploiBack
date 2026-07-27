@@ -6,6 +6,8 @@ using Microsoft.EntityFrameworkCore;
 using System.Security.Claims;
 using System.Text;
 using System.ComponentModel.DataAnnotations;
+using System.IdentityModel.Tokens.Jwt;
+using Microsoft.IdentityModel.Tokens;
 using lpdeBack.Data;
 using lpdeBack.Models;
 using lpdeBack.Hubs;
@@ -355,6 +357,146 @@ public class AdminController : ControllerBase
 
         await _log.Log("ExportCSV", "Application", null, $"Export {apps.Count} candidatures", UserId(), UserFullName(), Ip());
         return File(Encoding.UTF8.GetBytes(csv.ToString()), "text/csv", $"candidatures_{DateTime.UtcNow:yyyyMMdd}.csv");
+    }
+
+    // ═══════════════════════════════════
+    //  PRISE EN MAIN DE COMPTE
+    //
+    //  Un administrateur peut agir sous l'identite d'un candidat ou d'un
+    //  recruteur, pour reproduire un probleme qu'on lui decrit. C'est la
+    //  fonction la plus sensible du panneau : elle donne acces a des
+    //  messages prives et permet d'agir au nom de quelqu'un.
+    //
+    //  Quatre garde-fous, tous portes par le jeton lui-meme :
+    //   - il nomme l'administrateur reel autant que le compte emprunte,
+    //     pour que le journal dise qui a agi et pas seulement sous quel
+    //     compte ;
+    //   - un administrateur ne peut pas en emprunter un autre, sans quoi
+    //     la separation des roles ne vaudrait plus rien ;
+    //   - il vit trente minutes : un emprunt n'est pas un mode de travail ;
+    //   - l'entree et la sortie laissent une trace.
+    // ═══════════════════════════════════
+
+    [HttpPost("users/{id}/impersonate")]
+    public async Task<ActionResult<object>> Impersonate(string id,
+        [FromServices] IConfiguration config, CancellationToken ct)
+    {
+        var cible = await _context.Users.FirstOrDefaultAsync(u => u.Id == id, ct);
+        if (cible == null) return NotFound();
+
+        if (cible.Role == "Admin")
+            return BadRequest(new { message = "Un administrateur ne peut pas etre emprunte." });
+
+        if (!cible.IsActive)
+            return BadRequest(new { message = "Ce compte est suspendu." });
+
+        var adminId = UserId();
+        if (cible.Id == adminId)
+            return BadRequest(new { message = "Vous etes deja sur votre propre compte." });
+
+        var jeton = ConstruireJetonEmprunt(cible, adminId, UserFullName(), config);
+
+        await _log.Log("ImpersonateStart", "User", null,
+            $"Prise en main du compte {cible.Email} ({cible.Role})",
+            adminId, UserFullName(), Ip());
+
+        return Ok(new
+        {
+            token = jeton,
+            expiration = DateTime.UtcNow.AddMinutes(DureeEmpruntMinutes),
+            user = new
+            {
+                cible.Id, cible.Email, cible.FirstName, cible.LastName, cible.Role,
+                cible.AvatarUrl, cible.Company, cible.City, cible.Title,
+            },
+            emprunt = new { parId = adminId, parNom = UserFullName() },
+        });
+    }
+
+    /// <summary>
+    /// Fin de l'emprunt. L'appel se fait avec le jeton d'emprunt : c'est
+    /// lui qui porte l'identite de l'administrateur a qui rendre la main.
+    /// </summary>
+    /// <remarks>
+    /// AllowAnonymous leve la contrainte de role posee sur le controleur :
+    /// pendant un emprunt, le jeton porte le role du compte emprunte, pas
+    /// « Admin ». Sans cela, on ne pourrait plus rendre la main — on
+    /// restait prisonnier du compte jusqu'a expiration.
+    ///
+    /// La route n'est pas ouverte pour autant : elle exige la revendication
+    /// « impersonator_id », que seul un jeton d'emprunt signe par le
+    /// serveur peut porter.
+    /// </remarks>
+    [HttpPost("impersonate/stop")]
+    [AllowAnonymous]
+    public async Task<ActionResult<object>> StopImpersonation(
+        [FromServices] UserManager<AppUser> users,
+        [FromServices] IConfiguration config, CancellationToken ct)
+    {
+        var adminId = User.FindFirstValue("impersonator_id");
+        if (string.IsNullOrEmpty(adminId))
+            return BadRequest(new { message = "Cette session n'est pas un emprunt." });
+
+        var admin = await _context.Users.FirstOrDefaultAsync(u => u.Id == adminId, ct);
+        if (admin == null || admin.Role != "Admin")
+            return Unauthorized(new { message = "Administrateur d'origine introuvable." });
+
+        var emprunte = User.FindFirstValue(ClaimTypes.Email);
+        await _log.Log("ImpersonateStop", "User", null,
+            $"Fin de la prise en main du compte {emprunte}",
+            admin.Id, $"{admin.FirstName} {admin.LastName}", Ip());
+
+        return Ok(new
+        {
+            token = ConstruireJetonStandard(admin, config),
+            user = new
+            {
+                admin.Id, admin.Email, admin.FirstName, admin.LastName, admin.Role,
+                admin.AvatarUrl, admin.Company, admin.City, admin.Title,
+            },
+        });
+    }
+
+    private const int DureeEmpruntMinutes = 30;
+
+    private static string ConstruireJetonEmprunt(AppUser cible, string adminId,
+                                                 string adminNom, IConfiguration config)
+    {
+        var claims = ClaimsDeBase(cible);
+        // Les deux identites voyagent ensemble : c'est ce qui permet au
+        // journal de nommer l'auteur reel d'une action.
+        claims.Add(new Claim("impersonator_id", adminId));
+        claims.Add(new Claim("impersonator_name", adminNom));
+        return Signer(claims, config, DateTime.UtcNow.AddMinutes(DureeEmpruntMinutes));
+    }
+
+    private static string ConstruireJetonStandard(AppUser u, IConfiguration config)
+        => Signer(ClaimsDeBase(u), config, DateTime.UtcNow.AddHours(8));
+
+    private static List<Claim> ClaimsDeBase(AppUser u) => new()
+    {
+        new Claim(ClaimTypes.NameIdentifier, u.Id),
+        new Claim(ClaimTypes.Email, u.Email ?? string.Empty),
+        new Claim(ClaimTypes.GivenName, u.FirstName ?? string.Empty),
+        new Claim(ClaimTypes.Surname, u.LastName ?? string.Empty),
+        new Claim(ClaimTypes.Role, u.Role),
+    };
+
+    private static string Signer(IEnumerable<Claim> claims, IConfiguration config, DateTime expire)
+    {
+        var cle = config["Jwt:Key"] ?? "CleParDefautDeDeveloppementUniquement_32Caracteres!";
+        var creds = new SigningCredentials(
+            new SymmetricSecurityKey(Encoding.UTF8.GetBytes(cle)),
+            SecurityAlgorithms.HmacSha256);
+
+        var jeton = new JwtSecurityToken(
+            issuer: config["Jwt:Issuer"] ?? "LpdeBack",
+            audience: config["Jwt:Audience"] ?? "LpdeFront",
+            claims: claims,
+            expires: expire,
+            signingCredentials: creds);
+
+        return new JwtSecurityTokenHandler().WriteToken(jeton);
     }
 
     // ═══════════════════════════════════
