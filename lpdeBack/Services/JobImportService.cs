@@ -592,14 +592,14 @@ public class JobImportService
         // certains libellés FT « horaire » contiennent un montant annexe aberrant.
         // Plages plausibles (les données FT contiennent parfois des montants aberrants).
         double factor, lo, hi;
-        if (l.Contains("annuel")) { factor = 1; lo = 8_000; hi = 350_000; }
+        if (l.Contains("annuel")) { factor = 1; lo = 8_000; hi = 250_000; }
         else if (l.Contains("mensuel")) { factor = months; lo = 400; hi = 30_000; }
         else if (l.Contains("horaire")) { factor = 35 * 52; lo = 3; hi = 200; } // 35 h/sem légales
         else
         {
             // Période absente : on déduit de l'ordre de grandeur du plus grand montant.
             var big = amounts.Max();
-            if (big >= 10_000) { factor = 1; lo = 8_000; hi = 350_000; }
+            if (big >= 10_000) { factor = 1; lo = 8_000; hi = 250_000; }
             else if (big >= 500) { factor = months; lo = 400; hi = 30_000; }
             else { factor = 35 * 52; lo = 3; hi = 200; }
         }
@@ -609,7 +609,7 @@ public class JobImportService
 
         int aMin = (int)Math.Round(kept.Min() * factor);
         int aMax = (int)Math.Round(kept.Max() * factor);
-        if (aMax < 1000 || aMin > 1_000_000) return (null, null); // garde-fou plausibilité
+        if (aMax < 1000 || aMax > 250_000) return (null, null); // garde-fou plausibilité (plafond 250k)
         return (aMin, aMax);
     }
 
@@ -633,7 +633,7 @@ public class JobImportService
         var aMin = Conv(smin);
         var aMax = Conv(smax);
         int hi = aMax ?? aMin ?? 0, lo = aMin ?? aMax ?? 0;
-        if (hi < 1000 || lo > 1_000_000) return (null, null); // garde-fou plausibilité
+        if (hi < 1000 || hi > 250_000) return (null, null); // garde-fou plausibilité (plafond 250k)
         return (aMin, aMax);
     }
 
