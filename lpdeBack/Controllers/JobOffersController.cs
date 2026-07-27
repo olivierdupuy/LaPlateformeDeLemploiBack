@@ -773,6 +773,16 @@ public class JobOffersController : ControllerBase
             usersByCity = await ParVille(null),
             candidatesByCity = await ParVille("Candidate"),
             recruitersByCity = await ParVille("Recruiter"),
+
+            // La carte d'origine geographique superpose trois couches, dont
+            // celle des offres. Elle vit dans cette section : la laisser
+            // dans « Offres » rendait la couche vide tant qu'on n'avait pas
+            // ouvert cet onglet-la.
+            offersByLocation = await _context.JobOffers
+                .Where(j => j.IsActive && j.Location != null && j.Location != "")
+                .GroupBy(j => j.Location)
+                .Select(g => new { label = g.Key, value = g.Count() })
+                .OrderByDescending(x => x.value).Take(30).ToListAsync(),
         });
     }
 
