@@ -632,10 +632,14 @@ public class JobOffersController : ControllerBase
         {
             offersByDay = ParJour(jours.Select(x => (x.Jour, x.Nombre)).ToList(), j30),
 
+            // Les offres importees portent une categorie en texte libre :
+            // on en compte plus de quinze cents distinctes. Un graphique a
+            // quinze cents barres ne se lit pas — on sert le sommet, et le
+            // titre annonce que c'en est un.
             offersByCategory = await actives
                 .GroupBy(j => j.Category)
                 .Select(g => new { label = g.Key, value = g.Count() })
-                .OrderByDescending(x => x.value).ToListAsync(),
+                .OrderByDescending(x => x.value).Take(12).ToListAsync(),
 
             offersByContract = await actives
                 .GroupBy(j => j.ContractType)
@@ -677,7 +681,7 @@ public class JobOffersController : ControllerBase
                     min = (int)g.Average(j => j.MinSalary!.Value),
                     max = (int)g.Average(j => j.MaxSalary!.Value),
                 })
-                .OrderByDescending(x => x.max).ToListAsync(),
+                .OrderByDescending(x => x.max).Take(12).ToListAsync(),
 
             topCompanies = await actives
                 .GroupBy(j => j.Company)

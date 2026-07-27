@@ -50,6 +50,68 @@ public class AdminController : ControllerBase
         return Ok(new { deleted = seed.Count, titles = seed.Select(o => o.Title), message = $"{seed.Count} offre(s) de démonstration supprimée(s)." });
     }
 
+    /// <summary>
+    /// Repartition des offres par provenance.
+    ///
+    /// Sert a decider avant de supprimer : une offre sans source externe
+    /// n'est pas importee, elle a ete publiee sur la plateforme par un
+    /// recruteur. Les deux ne se suppriment pas de la meme main.
+    /// </summary>
+    [HttpGet("offers/sources")]
+    public async Task<ActionResult<object>> GetOfferSources()
+    {
+        var parSource = await _context.JobOffers
+            .GroupBy(j => j.ExternalSource)
+            .Select(g => new { source = g.Key, total = g.Count() })
+            .OrderByDescending(x => x.total)
+            .ToListAsync();
+
+        return Ok(new
+        {
+            total = parSource.Sum(x => x.total),
+            sources = parSource.Select(x => new
+            {
+                source = x.source ?? "(publiee sur la plateforme)",
+                importee = x.source != null,
+                x.total,
+            }),
+        });
+    }
+
+    /// <summary>
+    /// Ne conserve que les offres France Travail parmi les offres importees.
+    ///
+    /// Les offres publiees sur la plateforme (sans source externe) sont
+    /// preservees : ce sont celles des recruteurs, et les effacer
+    /// detruirait leur travail. Passer preserverPlateforme a false les
+    /// supprime aussi, ce qui doit rester un geste explicite.
+    /// </summary>
+    [HttpDelete("offers/keep-france-travail")]
+    public async Task<ActionResult<object>> KeepOnlyFranceTravail([FromQuery] bool preserverPlateforme = true)
+    {
+        var aSupprimer = _context.JobOffers.Where(j => j.ExternalSource != "francetravail");
+        if (preserverPlateforme)
+            aSupprimer = aSupprimer.Where(j => j.ExternalSource != null);
+
+        // Recapitulatif avant coupe : une suppression de masse doit
+        // pouvoir se raconter apres coup.
+        var detail = await aSupprimer
+            .GroupBy(j => j.ExternalSource)
+            .Select(g => new { source = g.Key ?? "(plateforme)", total = g.Count() })
+            .ToListAsync();
+
+        // ExecuteDelete : supprimer en base sans materialiser deux cent
+        // mille entites. Les candidatures liees partent en cascade.
+        var supprimees = await aSupprimer.ExecuteDeleteAsync();
+
+        var restantes = await _context.JobOffers.CountAsync();
+        await _log.Log("DeleteOffers", "JobOffer", null,
+            $"{supprimees} offre(s) supprimee(s), {restantes} restante(s)",
+            UserId(), UserFullName(), Ip());
+
+        return Ok(new { supprimees, restantes, detail });
+    }
+
     /// <summary>Admin : supprime toutes les offres d'une source d'import (ex. "adzuna") pour les ré-importer.</summary>
     [HttpDelete("offers-by-source/{source}")]
     public async Task<ActionResult<object>> DeleteBySource(string source)
