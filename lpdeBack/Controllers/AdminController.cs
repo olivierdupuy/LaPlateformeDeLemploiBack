@@ -762,6 +762,141 @@ public class AdminController : ControllerBase
     }
 
     // ═══════════════════════════════════
+    //  PIECES DU DOSSIER
+    //
+    //  Les onglets du dossier ne sont pas des formulaires mais des listes.
+    //  L'enregistrement se fait donc par ligne, au geste, plutot que par
+    //  un bouton global qui laisserait croire a un etat d'ensemble a
+    //  valider.
+    //
+    //  Le journal d'activite n'a volontairement aucune route d'ecriture :
+    //  une trace d'audit modifiable ne prouve plus rien, et il enregistre
+    //  desormais les prises en main de compte.
+    // ═══════════════════════════════════
+
+    [HttpPatch("applications/{id}")]
+    public async Task<IActionResult> ModifierCandidature(int id, [FromBody] PieceDossierDto dto)
+    {
+        var a = await _context.Applications.Include(x => x.JobOffer).FirstOrDefaultAsync(x => x.Id == id);
+        if (a == null) return NotFound();
+
+        if (!string.IsNullOrWhiteSpace(dto.Statut))
+        {
+            var valides = new[] { "Pending", "Reviewed", "Accepted", "Rejected" };
+            if (!valides.Contains(dto.Statut)) return BadRequest(new { message = "Statut inconnu." });
+
+            // Premiere transition hors « en attente » : on horodate la
+            // consultation, comme le fait le recruteur.
+            if (a.Status == "Pending" && dto.Statut != "Pending" && a.ReviewedAt == null)
+                a.ReviewedAt = DateTime.UtcNow;
+            a.Status = dto.Statut;
+        }
+
+        if (dto.Archivee.HasValue) a.IsArchived = dto.Archivee.Value;
+        if (dto.Notes != null) a.RecruiterNotes = dto.Notes;
+
+        await _context.SaveChangesAsync();
+        await _log.Log("UpdateApplication", "Application", id,
+            $"Candidature de {a.FullName} modifiee", UserId(), UserFullName(), Ip());
+        return Ok(new { a.Id, a.Status, a.IsArchived, a.ReviewedAt });
+    }
+
+    [HttpDelete("applications/{id}")]
+    public async Task<IActionResult> SupprimerCandidature(int id)
+    {
+        var a = await _context.Applications.FindAsync(id);
+        if (a == null) return NotFound();
+        _context.Applications.Remove(a);
+        await _context.SaveChangesAsync();
+        await _log.Log("DeleteApplication", "Application", id,
+            $"Candidature de {a.FullName} supprimee", UserId(), UserFullName(), Ip());
+        return NoContent();
+    }
+
+    [HttpPatch("saved-searches/{id}")]
+    public async Task<IActionResult> ModifierRecherche(int id, [FromBody] PieceDossierDto dto)
+    {
+        var s = await _context.SavedSearches.FindAsync(id);
+        if (s == null) return NotFound();
+        if (dto.AlerteActive.HasValue) s.AlertEnabled = dto.AlerteActive.Value;
+        if (dto.Libelle != null) s.Label = dto.Libelle;
+        await _context.SaveChangesAsync();
+        return Ok(new { s.Id, s.AlertEnabled, s.Label });
+    }
+
+    [HttpDelete("saved-searches/{id}")]
+    public async Task<IActionResult> SupprimerRecherche(int id)
+    {
+        var s = await _context.SavedSearches.FindAsync(id);
+        if (s == null) return NotFound();
+        _context.SavedSearches.Remove(s);
+        await _context.SaveChangesAsync();
+        return NoContent();
+    }
+
+    [HttpPatch("interviews/{id}")]
+    public async Task<IActionResult> ModifierEntretien(int id, [FromBody] PieceDossierDto dto)
+    {
+        var i = await _context.Interviews.FindAsync(id);
+        if (i == null) return NotFound();
+        if (!string.IsNullOrWhiteSpace(dto.Statut))
+        {
+            var valides = new[] { "Proposed", "Accepted", "Completed", "Cancelled" };
+            if (!valides.Contains(dto.Statut)) return BadRequest(new { message = "Statut inconnu." });
+            i.Status = dto.Statut;
+        }
+        if (dto.Notes != null) i.Notes = dto.Notes;
+        await _context.SaveChangesAsync();
+        await _log.Log("UpdateInterview", "Interview", id,
+            "Entretien modifie", UserId(), UserFullName(), Ip());
+        return Ok(new { i.Id, i.Status });
+    }
+
+    [HttpDelete("interviews/{id}")]
+    public async Task<IActionResult> SupprimerEntretien(int id)
+    {
+        var i = await _context.Interviews.FindAsync(id);
+        if (i == null) return NotFound();
+        _context.Interviews.Remove(i);
+        await _context.SaveChangesAsync();
+        return NoContent();
+    }
+
+    [HttpDelete("job-notes/{id}")]
+    public async Task<IActionResult> SupprimerNote(int id)
+    {
+        var n = await _context.JobNotes.FindAsync(id);
+        if (n == null) return NotFound();
+        _context.JobNotes.Remove(n);
+        await _context.SaveChangesAsync();
+        return NoContent();
+    }
+
+    [HttpPatch("cv-sections/{id}")]
+    public async Task<IActionResult> ModifierSectionCv(int id, [FromBody] SectionCvDto dto)
+    {
+        var c = await _context.CvSections.FindAsync(id);
+        if (c == null) return NotFound();
+        if (dto.Titre != null) c.Title = dto.Titre;
+        if (dto.Organisation != null) c.Organization = dto.Organisation;
+        if (dto.Lieu != null) c.Location = dto.Lieu;
+        if (dto.Description != null) c.Description = dto.Description;
+        if (dto.Niveau != null) c.Level = dto.Niveau;
+        await _context.SaveChangesAsync();
+        return Ok(new { c.Id, c.Title });
+    }
+
+    [HttpDelete("cv-sections/{id}")]
+    public async Task<IActionResult> SupprimerSectionCv(int id)
+    {
+        var c = await _context.CvSections.FindAsync(id);
+        if (c == null) return NotFound();
+        _context.CvSections.Remove(c);
+        await _context.SaveChangesAsync();
+        return NoContent();
+    }
+
+    // ═══════════════════════════════════
     //  4 bis. DOSSIER D'UN UTILISATEUR
     // ═══════════════════════════════════
 
@@ -1010,6 +1145,28 @@ public class AdminPasswordDto
 {
     [Required, MinLength(6)]
     public string NewPassword { get; set; } = string.Empty;
+}
+
+/// <summary>
+/// Modification d'une piece du dossier. Tout est optionnel : null
+/// signifie « ne touche pas », pas « efface ».
+/// </summary>
+public class PieceDossierDto
+{
+    [MaxLength(30)] public string? Statut { get; set; }
+    public bool? Archivee { get; set; }
+    public bool? AlerteActive { get; set; }
+    [MaxLength(200)] public string? Libelle { get; set; }
+    [MaxLength(2000)] public string? Notes { get; set; }
+}
+
+public class SectionCvDto
+{
+    [MaxLength(200)] public string? Titre { get; set; }
+    [MaxLength(200)] public string? Organisation { get; set; }
+    [MaxLength(200)] public string? Lieu { get; set; }
+    [MaxLength(2000)] public string? Description { get; set; }
+    [MaxLength(100)] public string? Niveau { get; set; }
 }
 
 // Les facettes alimentent les compteurs de l'en-tete des explorateurs.
