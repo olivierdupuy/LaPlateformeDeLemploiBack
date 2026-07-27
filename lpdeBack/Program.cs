@@ -83,6 +83,9 @@ builder.Services.AddSignalR();
 builder.Services.AddScoped<lpdeBack.Services.PushNotificationService>();
 builder.Services.AddScoped<lpdeBack.Services.ActivityLogService>();
 builder.Services.AddScoped<lpdeBack.Services.JobImportService>();
+// En singleton : le cache de jetons France Travail n'a d'interet que s'il
+// survit a la requete qui l'a rempli.
+builder.Services.AddSingleton<lpdeBack.Services.FranceTravailService>();
 builder.Services.AddHostedService<lpdeBack.Services.JobImportBackgroundService>();
 
 builder.Services.AddCors(options =>
