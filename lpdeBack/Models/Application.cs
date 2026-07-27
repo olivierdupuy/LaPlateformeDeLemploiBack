@@ -42,6 +42,14 @@ public class Application
 
     public DateTime AppliedAt { get; set; } = DateTime.UtcNow;
 
+    /// <summary>Le candidat a range cette candidature : elle sort de sa vue
+    /// active sans etre supprimee. N'affecte pas la vue du recruteur.</summary>
+    public bool IsArchived { get; set; }
+
+    /// <summary>Date a laquelle le recruteur a consulte la candidature,
+    /// pour l'afficher au candidat (« consultee le ... »).</summary>
+    public DateTime? ReviewedAt { get; set; }
+
     public string? UserId { get; set; }
     public AppUser? User { get; set; }
 

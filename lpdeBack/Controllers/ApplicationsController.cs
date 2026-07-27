@@ -79,6 +79,9 @@ public class ApplicationsController : ControllerBase
         };
 
         app.Status = dto.Status;
+        // Horodate la premiere consultation, pour l'afficher au candidat.
+        if (dto.Status == "Reviewed" && app.ReviewedAt == null)
+            app.ReviewedAt = DateTime.UtcNow;
         await _context.SaveChangesAsync();
 
         // Notification au candidat
@@ -225,6 +228,21 @@ public class ApplicationsController : ControllerBase
 
     // ── Candidat ──
 
+    /// <summary>Candidat : ranger ou sortir des archives une candidature.</summary>
+    [HttpPatch("{id}/archive")]
+    [Authorize]
+    public async Task<IActionResult> SetArchived(int id, [FromBody] ApplicationArchiveDto dto)
+    {
+        var userId = GetUserId();
+        var app = await _context.Applications.FirstOrDefaultAsync(a => a.Id == id);
+        if (app == null) return NotFound();
+        if (app.UserId != userId) return Forbid();
+
+        app.IsArchived = dto.IsArchived;
+        await _context.SaveChangesAsync();
+        return Ok(new { app.Id, app.IsArchived });
+    }
+
     [HttpGet("track")]
     [Authorize]
     public async Task<ActionResult<IEnumerable<object>>> TrackMyApplications()
@@ -237,6 +255,7 @@ public class ApplicationsController : ControllerBase
             .Select(a => new {
                 a.Id, a.JobOfferId, a.FullName, a.Email, a.Phone, a.CoverLetter,
                 a.ResumeUrl, a.Status, a.AppliedAt, a.UserId,
+                a.IsArchived, a.ReviewedAt,
                 // Exclure RecruiterNotes pour les candidats
                 JobOffer = a.JobOffer
             })

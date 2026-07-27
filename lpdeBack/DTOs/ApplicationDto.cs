@@ -17,6 +17,11 @@ public class ApplicationUpdateStatusDto
     public string Status { get; set; } = string.Empty;
 }
 
+public class ApplicationArchiveDto
+{
+    public bool IsArchived { get; set; }
+}
+
 public class ApplicationUpdateNotesDto
 {
     public string? Notes { get; set; }
