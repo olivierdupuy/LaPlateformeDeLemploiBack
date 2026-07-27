@@ -548,6 +548,294 @@ public class JobOffersController : ControllerBase
     }
 
     /// <summary>Admin: statistiques complètes de la plateforme</summary>
+    // ═══════════════════════════════════════════════════════════
+    //  STATISTIQUES — par section
+    //
+    //  La version d'origine chargeait toutes les offres en memoire pour
+    //  les agreger en LINQ. A deux cent quarante mille lignes, description
+    //  comprise, la reponse passait cinq secondes et pesait deux cents
+    //  kilo-octets — et grossissait a chaque import.
+    //
+    //  Les comptages se font desormais en base, et la page ne demande que
+    //  la section regardee. On ne transporte plus les lignes, seulement
+    //  leurs totaux.
+    // ═══════════════════════════════════════════════════════════
+
+    /// <summary>Compte les jours d'une serie sur trente jours, formate cote serveur.</summary>
+    private static List<object> ParJour(List<(DateTime Jour, int Nombre)> brut, DateTime depuis)
+    {
+        // On complete les jours sans donnee : une courbe trouee se lit mal,
+        // et l'absence d'activite est une information.
+        var index = brut.ToDictionary(x => x.Jour.Date, x => x.Nombre);
+        return Enumerable.Range(0, 30)
+            .Select(i => depuis.AddDays(i).Date)
+            .Select(j => (object)new { label = j.ToString("dd/MM"), value = index.GetValueOrDefault(j, 0) })
+            .ToList();
+    }
+
+    [HttpGet("stats/admin/apercu")]
+    [Authorize(Roles = "Admin")]
+    public async Task<ActionResult<object>> GetAdminApercu()
+    {
+        var now = DateTime.UtcNow;
+        var j30 = now.AddDays(-30);
+        var j7 = now.AddDays(-7);
+
+        var offres = _context.JobOffers;
+        var users = _userManager.Users;
+        var apps = _context.Applications;
+
+        return Ok(new
+        {
+            totalUsers = await users.CountAsync(),
+            totalCandidates = await users.CountAsync(u => u.Role == "Candidate"),
+            totalRecruiters = await users.CountAsync(u => u.Role == "Recruiter"),
+            totalAdmins = await users.CountAsync(u => u.Role == "Admin"),
+            usersLast30d = await users.CountAsync(u => u.CreatedAt >= j30),
+            usersLast7d = await users.CountAsync(u => u.CreatedAt >= j7),
+            onlineNow = lpdeBack.Hubs.ChatHub.GetOnlineUserIds().Count(),
+
+            totalOffers = await offres.CountAsync(),
+            activeOffers = await offres.CountAsync(j => j.IsActive),
+            expiredOffers = await offres.CountAsync(j => !j.IsActive),
+            urgentOffers = await offres.CountAsync(j => j.IsUrgent && j.IsActive),
+            remoteOffers = await offres.CountAsync(j => j.IsRemote && j.IsActive),
+            offersLast30d = await offres.CountAsync(j => j.CreatedAt >= j30),
+            // SUM cote base : additionner en memoire supposerait de
+            // rapatrier les deux cent quarante mille compteurs de vues.
+            totalViews = await offres.SumAsync(j => (long)j.ViewCount),
+
+            totalApplications = await apps.CountAsync(),
+            appsLast30d = await apps.CountAsync(a => a.AppliedAt >= j30),
+            appsLast7d = await apps.CountAsync(a => a.AppliedAt >= j7),
+
+            totalInterviews = await _context.Interviews.CountAsync(),
+            totalMessages = await _context.Messages.CountAsync(),
+            messagesLast30d = await _context.Messages.CountAsync(m => m.CreatedAt >= j30),
+        });
+    }
+
+    [HttpGet("stats/admin/offres")]
+    [Authorize(Roles = "Admin")]
+    public async Task<ActionResult<object>> GetAdminStatsOffres()
+    {
+        var j30 = DateTime.UtcNow.AddDays(-30);
+        var actives = _context.JobOffers.Where(j => j.IsActive);
+
+        var jours = await _context.JobOffers
+            .Where(j => j.CreatedAt >= j30)
+            .GroupBy(j => j.CreatedAt.Date)
+            .Select(g => new { Jour = g.Key, Nombre = g.Count() })
+            .ToListAsync();
+
+        return Ok(new
+        {
+            offersByDay = ParJour(jours.Select(x => (x.Jour, x.Nombre)).ToList(), j30),
+
+            offersByCategory = await actives
+                .GroupBy(j => j.Category)
+                .Select(g => new { label = g.Key, value = g.Count() })
+                .OrderByDescending(x => x.value).ToListAsync(),
+
+            offersByContract = await actives
+                .GroupBy(j => j.ContractType)
+                .Select(g => new { label = g.Key, value = g.Count() })
+                .OrderByDescending(x => x.value).ToListAsync(),
+
+            offersByExperience = await actives
+                .Where(j => j.ExperienceRequired != null && j.ExperienceRequired != "")
+                .GroupBy(j => j.ExperienceRequired!)
+                .Select(g => new { label = g.Key, value = g.Count() })
+                .OrderByDescending(x => x.value).ToListAsync(),
+
+            // Le titre est tronque apres la selection : le decouper en SQL
+            // obligerait a des fonctions propres a chaque moteur.
+            topViewedOffers = (await actives
+                .OrderByDescending(j => j.ViewCount)
+                .Take(10)
+                .Select(j => new { j.Title, j.ViewCount, j.Company })
+                .ToListAsync())
+                .Select(j => new
+                {
+                    label = j.Title.Length > 35 ? j.Title[..35] + "..." : j.Title,
+                    value = j.ViewCount,
+                    company = j.Company,
+                }).ToList(),
+
+            offersByLocation = await actives
+                .Where(j => j.Location != null && j.Location != "")
+                .GroupBy(j => j.Location)
+                .Select(g => new { label = g.Key, value = g.Count() })
+                .OrderByDescending(x => x.value).Take(20).ToListAsync(),
+
+            salaryByCategory = await actives
+                .Where(j => j.MinSalary != null && j.MaxSalary != null)
+                .GroupBy(j => j.Category)
+                .Select(g => new
+                {
+                    label = g.Key,
+                    min = (int)g.Average(j => j.MinSalary!.Value),
+                    max = (int)g.Average(j => j.MaxSalary!.Value),
+                })
+                .OrderByDescending(x => x.max).ToListAsync(),
+
+            topCompanies = await actives
+                .GroupBy(j => j.Company)
+                .Select(g => new { label = g.Key, value = g.Count() })
+                .OrderByDescending(x => x.value).Take(10).ToListAsync(),
+        });
+    }
+
+    [HttpGet("stats/admin/candidatures")]
+    [Authorize(Roles = "Admin")]
+    public async Task<ActionResult<object>> GetAdminStatsCandidatures()
+    {
+        var j30 = DateTime.UtcNow.AddDays(-30);
+
+        var jours = await _context.Applications
+            .Where(a => a.AppliedAt >= j30)
+            .GroupBy(a => a.AppliedAt.Date)
+            .Select(g => new { Jour = g.Key, Nombre = g.Count() })
+            .ToListAsync();
+
+        // Taux de conversion : vues rapportees aux candidatures, par
+        // entreprise. Les deux cotes s'agregent separement puis se
+        // rejoignent en memoire — sur dix lignes, c'est sans consequence.
+        var candParEntreprise = await _context.Applications
+            .Where(a => a.JobOffer != null)
+            .GroupBy(a => a.JobOffer!.Company)
+            .Select(g => new { Entreprise = g.Key, Candidatures = g.Count() })
+            .OrderByDescending(x => x.Candidatures).Take(10).ToListAsync();
+
+        var noms = candParEntreprise.Select(x => x.Entreprise).ToList();
+        var vuesParEntreprise = await _context.JobOffers
+            .Where(j => noms.Contains(j.Company))
+            .GroupBy(j => j.Company)
+            .Select(g => new { Entreprise = g.Key, Vues = g.Sum(j => j.ViewCount) })
+            .ToListAsync();
+
+        var conversion = candParEntreprise.Select(c =>
+        {
+            var vues = vuesParEntreprise.FirstOrDefault(v => v.Entreprise == c.Entreprise)?.Vues ?? 0;
+            return new
+            {
+                label = c.Entreprise,
+                value = vues > 0 ? Math.Round(c.Candidatures * 100.0 / vues, 1) : 0,
+            };
+        }).OrderByDescending(x => x.value).ToList();
+
+        return Ok(new
+        {
+            appsByStatus = await _context.Applications
+                .GroupBy(a => a.Status)
+                .Select(g => new { label = g.Key, value = g.Count() })
+                .ToListAsync(),
+
+            appsByDay = ParJour(jours.Select(x => (x.Jour, x.Nombre)).ToList(), j30),
+
+            appsBySource = await _context.Applications
+                .GroupBy(a => a.Source ?? "Directe")
+                .Select(g => new { label = g.Key, value = g.Count() })
+                .OrderByDescending(x => x.value).ToListAsync(),
+
+            conversionByCompany = conversion,
+        });
+    }
+
+    [HttpGet("stats/admin/utilisateurs")]
+    [Authorize(Roles = "Admin")]
+    public async Task<ActionResult<object>> GetAdminStatsUtilisateurs()
+    {
+        var j30 = DateTime.UtcNow.AddDays(-30);
+        var users = _userManager.Users;
+
+        var jours = await users
+            .Where(u => u.CreatedAt >= j30)
+            .GroupBy(u => u.CreatedAt.Date)
+            .Select(g => new { Jour = g.Key, Nombre = g.Count() })
+            .ToListAsync();
+
+        async Task<List<object>> ParVille(string? role) =>
+            (await users
+                .Where(u => u.City != null && u.City != "" && (role == null || u.Role == role))
+                .GroupBy(u => u.City!)
+                .Select(g => new { label = g.Key, value = g.Count() })
+                .OrderByDescending(x => x.value).Take(15).ToListAsync())
+            .Cast<object>().ToList();
+
+        return Ok(new
+        {
+            registrationsByDay = ParJour(jours.Select(x => (x.Jour, x.Nombre)).ToList(), j30),
+            usersByCity = await ParVille(null),
+            candidatesByCity = await ParVille("Candidate"),
+            recruitersByCity = await ParVille("Recruiter"),
+        });
+    }
+
+    [HttpGet("stats/admin/echanges")]
+    [Authorize(Roles = "Admin")]
+    public async Task<ActionResult<object>> GetAdminStatsEchanges()
+    {
+        var j30 = DateTime.UtcNow.AddDays(-30);
+
+        var jours = await _context.Messages
+            .Where(m => m.CreatedAt >= j30)
+            .GroupBy(m => m.CreatedAt.Date)
+            .Select(g => new { Jour = g.Key, Nombre = g.Count() })
+            .ToListAsync();
+
+        return Ok(new
+        {
+            interviewsByType = await _context.Interviews
+                .Where(i => i.Type != null && i.Type != "")
+                .GroupBy(i => i.Type!)
+                .Select(g => new { label = g.Key, value = g.Count() })
+                .OrderByDescending(x => x.value).ToListAsync(),
+
+            interviewsByStatus = await _context.Interviews
+                .GroupBy(i => i.Status)
+                .Select(g => new { label = g.Key, value = g.Count() })
+                .ToListAsync(),
+
+            messagesByDay = ParJour(jours.Select(x => (x.Jour, x.Nombre)).ToList(), j30),
+        });
+    }
+
+    [HttpGet("stats/admin/activite")]
+    [Authorize(Roles = "Admin")]
+    public async Task<ActionResult<object>> GetAdminStatsActivite()
+    {
+        var j30 = DateTime.UtcNow.AddDays(-30);
+
+        var offres = await _context.JobOffers.Where(j => j.CreatedAt >= j30)
+            .GroupBy(j => j.CreatedAt.Date).Select(g => new { g.Key, N = g.Count() }).ToListAsync();
+        var cand = await _context.Applications.Where(a => a.AppliedAt >= j30)
+            .GroupBy(a => a.AppliedAt.Date).Select(g => new { g.Key, N = g.Count() }).ToListAsync();
+        var inscr = await _userManager.Users.Where(u => u.CreatedAt >= j30)
+            .GroupBy(u => u.CreatedAt.Date).Select(g => new { g.Key, N = g.Count() }).ToListAsync();
+
+        var io = offres.ToDictionary(x => x.Key, x => x.N);
+        var ic = cand.ToDictionary(x => x.Key, x => x.N);
+        var iu = inscr.ToDictionary(x => x.Key, x => x.N);
+
+        var timeline = Enumerable.Range(0, 30)
+            .Select(i => j30.AddDays(i).Date)
+            .Select(j => new
+            {
+                label = j.ToString("dd/MM"),
+                offres = io.GetValueOrDefault(j, 0),
+                candidatures = ic.GetValueOrDefault(j, 0),
+                inscriptions = iu.GetValueOrDefault(j, 0),
+            }).ToList();
+
+        return Ok(new { activityTimeline = timeline });
+    }
+
+    /// <summary>
+    /// Version historique, en un seul appel. Conservee pour tout appelant
+    /// exterieur, mais la page d'administration ne l'utilise plus : elle
+    /// charge desormais section par section.
+    /// </summary>
     [HttpGet("stats/admin")]
     [Authorize(Roles = "Admin")]
     public async Task<ActionResult<object>> GetAdminStats()
