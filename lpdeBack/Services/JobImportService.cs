@@ -80,12 +80,16 @@ public class JobImportService
             .ToListAsync(ct);
         var seen = new HashSet<string>(existing, StringComparer.OrdinalIgnoreCase);
 
+        // ── Sources d'import ──
+        // Seule France Travail alimente le catalogue. Les agregateurs
+        // Arbeitnow, Remotive, Adzuna et Jooble sont desactives : leurs
+        // offres ont ete retirees, et les laisser tourner les ferait
+        // revenir au prochain passage — la suppression se deferait seule.
+        //
+        // Leurs methodes de recuperation restent en place : les rallumer
+        // ne demande que de retablir la ligne correspondante.
         var toAdd = new List<JobOffer>();
-        try { toAdd.AddRange(await FetchArbeitnowAsync(seen, ct)); } catch (Exception e) { _logger.LogWarning(e, "Import Arbeitnow échoué"); }
-        try { toAdd.AddRange(await FetchRemotiveAsync(seen, ct)); } catch (Exception e) { _logger.LogWarning(e, "Import Remotive échoué"); }
         try { toAdd.AddRange(await FetchFranceTravailAsync(seen, ct)); } catch (Exception e) { _logger.LogWarning(e, "Import France Travail échoué"); }
-        try { toAdd.AddRange(await FetchAdzunaAsync(seen, ct)); } catch (Exception e) { _logger.LogWarning(e, "Import Adzuna échoué"); }
-        try { toAdd.AddRange(await FetchJoobleAsync(seen, ct)); } catch (Exception e) { _logger.LogWarning(e, "Import Jooble échoué"); }
 
         if (toAdd.Count == 0) return 0;
 
