@@ -3,7 +3,9 @@ using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
+using System.Globalization;
 using System.Security.Claims;
+using System.Text;
 using lpdeBack.Data;
 using lpdeBack.Models;
 using lpdeBack.DTOs;
@@ -193,15 +195,35 @@ public class JobOffersController : ControllerBase
     /// <summary>Une entree de la page « Parcourir » : un libelle et son nombre d'offres.</summary>
     public record BrowseFacet(string label, int count);
 
+    /// <summary>Un libelle et la forme sur laquelle on le cherche.</summary>
+    private record BrowseEntry(BrowseFacet facet, string key);
+
     private const int BrowsePreview = 24;      // ce qu'on sert sans que l'utilisateur ait demande plus
     private const int BrowseMaxLocations = 300;
+
+    /// <summary>
+    /// Forme de comparaison d'un libelle : sans accent ni majuscule. « Developpeur »
+    /// doit trouver « Developpeur / Developpeuse web », personne ne tape les accents
+    /// dans un champ de filtre.
+    /// </summary>
+    private static string BrowseKey(string label)
+    {
+        var decomposed = label.Normalize(NormalizationForm.FormD);
+        var sb = new StringBuilder(decomposed.Length);
+        foreach (var c in decomposed)
+        {
+            if (CharUnicodeInfo.GetUnicodeCategory(c) != UnicodeCategory.NonSpacingMark)
+                sb.Append(c);
+        }
+        return sb.ToString().Normalize(NormalizationForm.FormC).ToLowerInvariant();
+    }
 
     /// <summary>
     /// Agregat d'une section, en cache dix minutes. Chacun de ces GROUP BY balaie la
     /// table entiere des offres : on le paie une fois, puis la pagination et la
     /// recherche se font en memoire sans retoucher la base.
     /// </summary>
-    private async Task<List<BrowseFacet>> GetBrowseFacetsAsync(string section)
+    private async Task<List<BrowseEntry>> GetBrowseFacetsAsync(string section)
     {
         var cached = await _cache.GetOrCreateAsync($"browse:{section}", async entry =>
         {
@@ -226,10 +248,12 @@ public class JobOffersController : ControllerBase
                 ? await ordered.Take(BrowseMaxLocations).ToListAsync()
                 : await ordered.ToListAsync();
 
-            return rows.Select(r => new BrowseFacet(r.label, r.count)).ToList();
+            return rows
+                .Select(r => new BrowseEntry(new BrowseFacet(r.label, r.count), BrowseKey(r.label)))
+                .ToList();
         });
 
-        return cached ?? new List<BrowseFacet>();
+        return cached ?? new List<BrowseEntry>();
     }
 
     /// <summary>Apercu des trois sections de la page « Parcourir », avec les totaux.</summary>
@@ -244,11 +268,11 @@ public class JobOffersController : ControllerBase
         // d'entrees et n'a aucune raison de traverser le reseau d'un seul bloc.
         return new
         {
-            categories = categories.Take(BrowsePreview),
+            categories = categories.Take(BrowsePreview).Select(e => e.facet),
             categoriesTotal = categories.Count,
-            locations = locations.Take(BrowsePreview),
+            locations = locations.Take(BrowsePreview).Select(e => e.facet),
             locationsTotal = locations.Count,
-            contractTypes = contractTypes.Take(BrowsePreview),
+            contractTypes = contractTypes.Take(BrowsePreview).Select(e => e.facet),
             contractTypesTotal = contractTypes.Count,
         };
     }
@@ -267,17 +291,17 @@ public class JobOffersController : ControllerBase
         page = Math.Max(1, page);
         pageSize = Math.Clamp(pageSize, 1, 100);
 
-        IEnumerable<BrowseFacet> facets = await GetBrowseFacetsAsync(section);
+        IEnumerable<BrowseEntry> entries = await GetBrowseFacetsAsync(section);
         if (!string.IsNullOrWhiteSpace(search))
         {
-            var needle = search.Trim();
-            facets = facets.Where(f => f.label.Contains(needle, StringComparison.OrdinalIgnoreCase));
+            var needle = BrowseKey(search.Trim());
+            entries = entries.Where(e => e.key.Contains(needle, StringComparison.Ordinal));
         }
 
-        var list = facets.ToList();
+        var list = entries.ToList();
         return new
         {
-            items = list.Skip((page - 1) * pageSize).Take(pageSize),
+            items = list.Skip((page - 1) * pageSize).Take(pageSize).Select(e => e.facet),
             total = list.Count,
             page,
             pageSize,
