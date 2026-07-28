@@ -44,7 +44,28 @@ builder.Services.AddIdentity<AppUser, IdentityRole>(options =>
 .AddEntityFrameworkStores<AppDbContext>()
 .AddDefaultTokenProviders();
 
-var jwtKey = builder.Configuration["Jwt:Key"] ?? "LpdeSecretKey2026SuperSecure!@#$%^&*()_+";
+// ── Cle de signature JWT ──
+// Aucun repli : une valeur par defaut ici restaurerait silencieusement une cle
+// connue le jour ou la configuration viendrait a manquer, et l'API se remettrait
+// a signer des jetons que n'importe qui peut forger. Mieux vaut ne pas demarrer.
+var jwtKey = builder.Configuration["Jwt:Key"];
+
+if (string.IsNullOrWhiteSpace(jwtKey))
+    throw new InvalidOperationException(
+        "Jwt:Key absente. Renseignez-la via les secrets de deploiement, " +
+        "ou en local avec « dotnet user-secrets set \"Jwt:Key\" \"<votre cle>\" ».");
+
+// HMAC-SHA256 exige 256 bits : en deca, la signature echoue a la premiere
+// connexion avec un message autrement plus obscur que celui-ci.
+if (jwtKey.Length < 32)
+    throw new InvalidOperationException(
+        $"Jwt:Key trop courte ({jwtKey.Length} caracteres). HMAC-SHA256 en exige au moins 32.");
+
+// Cette valeur a ete publiee sur un depot public : elle ne signe plus rien.
+if (jwtKey == "LpdeSecretKey2026SuperSecure!@#$%^&*()_+")
+    throw new InvalidOperationException(
+        "Jwt:Key est la cle compromise du depot. Generez-en une nouvelle : " +
+        "elle est lisible par quiconque a lu le code, et permet de forger un jeton Admin.");
 builder.Services.AddAuthentication(options =>
 {
     options.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;
