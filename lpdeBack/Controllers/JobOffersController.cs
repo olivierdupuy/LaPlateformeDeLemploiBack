@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Caching.Memory;
 using System.Security.Claims;
 using lpdeBack.Data;
 using lpdeBack.Models;
@@ -16,11 +17,13 @@ public class JobOffersController : ControllerBase
 {
     private readonly AppDbContext _context;
     private readonly UserManager<AppUser> _userManager;
+    private readonly IMemoryCache _cache;
 
-    public JobOffersController(AppDbContext context, UserManager<AppUser> userManager)
+    public JobOffersController(AppDbContext context, UserManager<AppUser> userManager, IMemoryCache cache)
     {
         _context = context;
         _userManager = userManager;
+        _cache = cache;
     }
 
     private string? GetUserId() => User.FindFirstValue(ClaimTypes.NameIdentifier);
@@ -187,33 +190,98 @@ public class JobOffersController : ControllerBase
         return new { required = val == "true" };
     }
 
-    /// <summary>Donnees pour les pages de parcours (metiers, lieux, contrats) avec compteurs.</summary>
+    /// <summary>Une entree de la page « Parcourir » : un libelle et son nombre d'offres.</summary>
+    public record BrowseFacet(string label, int count);
+
+    private const int BrowsePreview = 24;      // ce qu'on sert sans que l'utilisateur ait demande plus
+    private const int BrowseMaxLocations = 300;
+
+    /// <summary>
+    /// Agregat d'une section, en cache dix minutes. Chacun de ces GROUP BY balaie la
+    /// table entiere des offres : on le paie une fois, puis la pagination et la
+    /// recherche se font en memoire sans retoucher la base.
+    /// </summary>
+    private async Task<List<BrowseFacet>> GetBrowseFacetsAsync(string section)
+    {
+        var cached = await _cache.GetOrCreateAsync($"browse:{section}", async entry =>
+        {
+            entry.AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(10);
+
+            var active = _context.JobOffers.Where(j => j.IsActive && j.ModerationStatus == "Approved");
+            var grouped = section switch
+            {
+                "categories" => active.Where(j => j.Category != "").GroupBy(j => j.Category),
+                "locations" => active.Where(j => j.Location != "").GroupBy(j => j.Location),
+                _ => active.Where(j => j.ContractType != "").GroupBy(j => j.ContractType),
+            };
+
+            var ordered = grouped
+                .Select(g => new { label = g.Key, count = g.Count() })
+                .OrderByDescending(x => x.count)
+                .ThenBy(x => x.label);
+
+            // Les lieux sont bruites (une ligne par commune) : au-dela de 300 entrees
+            // c'est du remplissage, personne ne parcourt jusque-la.
+            var rows = section == "locations"
+                ? await ordered.Take(BrowseMaxLocations).ToListAsync()
+                : await ordered.ToListAsync();
+
+            return rows.Select(r => new BrowseFacet(r.label, r.count)).ToList();
+        });
+
+        return cached ?? new List<BrowseFacet>();
+    }
+
+    /// <summary>Apercu des trois sections de la page « Parcourir », avec les totaux.</summary>
     [HttpGet("browse")]
     public async Task<ActionResult<object>> Browse()
     {
-        var active = _context.JobOffers.Where(j => j.IsActive && j.ModerationStatus == "Approved");
+        var categories = await GetBrowseFacetsAsync("categories");
+        var locations = await GetBrowseFacetsAsync("locations");
+        var contractTypes = await GetBrowseFacetsAsync("contractTypes");
 
-        var categories = await active
-            .GroupBy(j => j.Category)
-            .Select(g => new { label = g.Key, count = g.Count() })
-            .OrderByDescending(x => x.count)
-            .ToListAsync();
+        // Volontairement tronque : la liste complete des metiers depasse le millier
+        // d'entrees et n'a aucune raison de traverser le reseau d'un seul bloc.
+        return new
+        {
+            categories = categories.Take(BrowsePreview),
+            categoriesTotal = categories.Count,
+            locations = locations.Take(BrowsePreview),
+            locationsTotal = locations.Count,
+            contractTypes = contractTypes.Take(BrowsePreview),
+            contractTypesTotal = contractTypes.Count,
+        };
+    }
 
-        var locations = await active
-            .Where(j => j.Location != "")
-            .GroupBy(j => j.Location)
-            .Select(g => new { label = g.Key, count = g.Count() })
-            .OrderByDescending(x => x.count)
-            .Take(30)
-            .ToListAsync();
+    /// <summary>Une seule section de la page « Parcourir », paginee et filtrable.</summary>
+    [HttpGet("browse/{section}")]
+    public async Task<ActionResult<object>> BrowseSection(
+        string section,
+        [FromQuery] string? search,
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = BrowsePreview)
+    {
+        if (section is not ("categories" or "locations" or "contractTypes"))
+            return BadRequest(new { message = "Section de parcours inconnue." });
 
-        var contractTypes = await active
-            .GroupBy(j => j.ContractType)
-            .Select(g => new { label = g.Key, count = g.Count() })
-            .OrderByDescending(x => x.count)
-            .ToListAsync();
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 100);
 
-        return new { categories, locations, contractTypes };
+        IEnumerable<BrowseFacet> facets = await GetBrowseFacetsAsync(section);
+        if (!string.IsNullOrWhiteSpace(search))
+        {
+            var needle = search.Trim();
+            facets = facets.Where(f => f.label.Contains(needle, StringComparison.OrdinalIgnoreCase));
+        }
+
+        var list = facets.ToList();
+        return new
+        {
+            items = list.Skip((page - 1) * pageSize).Take(pageSize),
+            total = list.Count,
+            page,
+            pageSize,
+        };
     }
 
     // Valeurs réellement présentes en base pour les filtres avancés,
