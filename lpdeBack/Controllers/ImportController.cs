@@ -54,6 +54,30 @@ public class ImportController : ControllerBase
         return Ok(await svc.AnalyzeDuplicatesAsync(HttpContext.RequestAborted));
     }
 
+    /// <summary>
+    /// Admin : supprimer les exemplaires en double, en gardant le plus ancien.
+    ///
+    /// Simulation par defaut : il faut <c>apply=true</c> pour que quoi que ce soit
+    /// soit ecrit. Supprimer la moitie d'un catalogue ne doit pas tenir a une faute
+    /// de frappe dans une URL.
+    /// </summary>
+    [HttpPost("duplicates/purge")]
+    public async Task<ActionResult<object>> PurgeDuplicates(
+        [FromQuery] bool apply = false,
+        [FromQuery] int batchSize = 2000)
+    {
+        using var scope = _scopeFactory.CreateScope();
+        var svc = scope.ServiceProvider.GetRequiredService<JobImportService>();
+        var outcome = await svc.PurgeDuplicatesAsync(apply, batchSize, CancellationToken.None);
+
+        if (!outcome.started) return Conflict(outcome);
+
+        if (outcome.applied)
+            _logger.LogWarning("Purge admin des doublons : {Deleted} offres supprimees.", outcome.offersDeleted);
+
+        return Ok(outcome);
+    }
+
     /// <summary>Admin : diagnostic des sources d'import à clé (statut HTTP, nb de résultats).</summary>
     [HttpGet("diagnostics")]
     public async Task<ActionResult<object>> Diagnostics()

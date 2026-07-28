@@ -225,7 +225,7 @@ public class JobOffersController : ControllerBase
     /// </summary>
     private async Task<List<BrowseEntry>> GetBrowseFacetsAsync(string section)
     {
-        var cached = await _cache.GetOrCreateAsync($"browse:{section}", async entry =>
+        var cached = await _cache.GetOrCreateAsync(lpdeBack.Services.BrowseCache.Key(section), async entry =>
         {
             entry.AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(10);
 

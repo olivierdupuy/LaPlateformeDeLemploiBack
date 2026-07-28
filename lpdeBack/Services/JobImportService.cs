@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Caching.Memory;
 using lpdeBack.Data;
 using lpdeBack.Models;
 
@@ -19,6 +20,7 @@ public class JobImportService
     private readonly IHttpClientFactory _httpFactory;
     private readonly IConfiguration _config;
     private readonly ILogger<JobImportService> _logger;
+    private readonly IMemoryCache _cache;
 
     /// <summary>
     /// Un seul import a la fois, tous points d'entree confondus. Le service est
@@ -37,12 +39,14 @@ public class JobImportService
     /// <summary>Issue d'un import : <c>started</c> est faux si un autre etait deja en cours.</summary>
     public record ImportOutcome(bool started, int added);
 
-    public JobImportService(AppDbContext context, IHttpClientFactory httpFactory, IConfiguration config, ILogger<JobImportService> logger)
+    public JobImportService(AppDbContext context, IHttpClientFactory httpFactory, IConfiguration config,
+        ILogger<JobImportService> logger, IMemoryCache cache)
     {
         _context = context;
         _httpFactory = httpFactory;
         _config = config;
         _logger = logger;
+        _cache = cache;
     }
 
     /// <summary>
@@ -104,6 +108,130 @@ public class JobImportService
             },
             sample,
         };
+    }
+
+    /// <summary>Resultat d'une purge. <c>applied</c> est faux en simulation.</summary>
+    public record PurgeOutcome(
+        bool started, bool applied, int surplusRows, int encumberedRows,
+        int applicationsReassigned, int reportsReassigned, int notesReassigned, int notesDeleted,
+        int offersDeleted, int batches, string message);
+
+    /// <summary>
+    /// Supprime les exemplaires excedentaires des offres importees, en gardant le
+    /// plus ancien Id de chaque ExternalId. Simulation par defaut.
+    ///
+    /// Partage le verrou de l'import : purger pendant qu'un import ecrit reviendrait
+    /// a calculer les survivants sur une base qui bouge.
+    /// </summary>
+    public async Task<PurgeOutcome> PurgeDuplicatesAsync(bool apply, int batchSize, CancellationToken ct = default)
+    {
+        if (!await ImportGate.WaitAsync(0, ct))
+        {
+            _logger.LogWarning("Purge des doublons refusee : un import est en cours.");
+            return new PurgeOutcome(false, false, 0, 0, 0, 0, 0, 0, 0, 0,
+                "Un import est en cours. Reessayez une fois qu'il est termine.");
+        }
+
+        IsRunning = true;
+        try { return await PurgeCoreAsync(apply, batchSize, ct); }
+        finally { IsRunning = false; ImportGate.Release(); }
+    }
+
+    private async Task<PurgeOutcome> PurgeCoreAsync(bool apply, int batchSize, CancellationToken ct)
+    {
+        batchSize = Math.Clamp(batchSize, 100, 5000);
+
+        var imported = _context.JobOffers.Where(j => j.ExternalId != null);
+        var total = await _context.JobOffers.CountAsync(ct);
+        var survivorIds = imported.GroupBy(j => j.ExternalId).Select(g => g.Min(x => x.Id));
+        var surplusIds = await imported.Where(j => !survivorIds.Contains(j.Id)).Select(j => j.Id).ToListAsync(ct);
+
+        if (surplusIds.Count == 0)
+            return new PurgeOutcome(true, apply, 0, 0, 0, 0, 0, 0, 0, 0, "Aucun doublon a supprimer.");
+
+        // Garde-fou : viser la quasi-totalite du catalogue trahirait une erreur de
+        // raisonnement, pas une base a moitie dupliquee. On s'arrete plutot que de
+        // vider la table sur un calcul faux.
+        if (surplusIds.Count > total * 0.9)
+            return new PurgeOutcome(true, false, surplusIds.Count, 0, 0, 0, 0, 0, 0, 0,
+                $"Purge refusee : {surplusIds.Count} lignes visees sur {total}, soit la quasi-totalite du catalogue.");
+
+        // Les lignes reellement grevees d'une dependance. Le comptage precedent en
+        // annoncait zero, mais une candidature a pu arriver depuis : on revefifie
+        // plutot que de faire confiance a une mesure vieille de quelques heures.
+        var encumbered = new HashSet<int>();
+        foreach (var chunk in surplusIds.Chunk(batchSize))
+        {
+            encumbered.UnionWith(await _context.Applications
+                .Where(a => chunk.Contains(a.JobOfferId)).Select(a => a.JobOfferId).Distinct().ToListAsync(ct));
+            encumbered.UnionWith(await _context.JobNotes
+                .Where(n => chunk.Contains(n.JobOfferId)).Select(n => n.JobOfferId).Distinct().ToListAsync(ct));
+            encumbered.UnionWith(await _context.JobReports
+                .Where(r => chunk.Contains(r.JobOfferId)).Select(r => r.JobOfferId).Distinct().ToListAsync(ct));
+        }
+
+        // Correspondance excedentaire -> survivant, construite pour les seules
+        // lignes grevees : inutile de la batir pour les cent mille autres.
+        var toSurvivor = new Dictionary<int, int>();
+        if (encumbered.Count > 0)
+        {
+            var rows = await _context.JobOffers
+                .Where(j => encumbered.Contains(j.Id))
+                .Select(j => new { j.Id, j.ExternalId })
+                .ToListAsync(ct);
+
+            var keys = rows.Select(r => r.ExternalId).Distinct().ToList();
+            var survivors = await _context.JobOffers
+                .Where(j => j.ExternalId != null && keys.Contains(j.ExternalId))
+                .GroupBy(j => j.ExternalId)
+                .Select(g => new { key = g.Key, id = g.Min(x => x.Id) })
+                .ToListAsync(ct);
+
+            var byKey = survivors.ToDictionary(s => s.key!, s => s.id);
+            foreach (var r in rows)
+                if (byKey.TryGetValue(r.ExternalId!, out var survivor)) toSurvivor[r.Id] = survivor;
+        }
+
+        if (!apply)
+            return new PurgeOutcome(true, false, surplusIds.Count, encumbered.Count, 0, 0, 0, 0, 0, 0,
+                $"Simulation : {surplusIds.Count} exemplaire(s) a supprimer, dont {encumbered.Count} portant une dependance a reaffecter. Rien n'a ete modifie.");
+
+        int apps = 0, reports = 0, notesMoved = 0, notesDropped = 0;
+        foreach (var (loser, survivor) in toSurvivor)
+        {
+            apps += await _context.Applications.Where(a => a.JobOfferId == loser)
+                .ExecuteUpdateAsync(s => s.SetProperty(a => a.JobOfferId, survivor), ct);
+            reports += await _context.JobReports.Where(r => r.JobOfferId == loser)
+                .ExecuteUpdateAsync(s => s.SetProperty(r => r.JobOfferId, survivor), ct);
+
+            // Favoris : (UserId, JobOfferId) est unique. Si la personne a deja le
+            // survivant en favori, reaffecter violerait l'index — on supprime le
+            // favori en double au lieu de le deplacer.
+            var deja = await _context.JobNotes.Where(n => n.JobOfferId == survivor)
+                .Select(n => n.UserId).ToListAsync(ct);
+            notesDropped += await _context.JobNotes
+                .Where(n => n.JobOfferId == loser && deja.Contains(n.UserId)).ExecuteDeleteAsync(ct);
+            notesMoved += await _context.JobNotes.Where(n => n.JobOfferId == loser)
+                .ExecuteUpdateAsync(s => s.SetProperty(n => n.JobOfferId, survivor), ct);
+        }
+
+        // Suppression par lots, hors transaction d'ensemble : une transaction de
+        // cent mille lignes tiendrait la table trop longtemps. Une interruption
+        // laisse un travail partiel, que relancer la purge termine — l'operation
+        // est idempotente.
+        int deleted = 0, batches = 0;
+        foreach (var chunk in surplusIds.Chunk(batchSize))
+        {
+            deleted += await _context.JobOffers.Where(j => chunk.Contains(j.Id)).ExecuteDeleteAsync(ct);
+            batches++;
+        }
+
+        BrowseCache.Invalidate(_cache);
+        _logger.LogWarning("Purge des doublons : {Deleted} offres supprimees en {Batches} lots.", deleted, batches);
+
+        return new PurgeOutcome(true, true, surplusIds.Count, encumbered.Count,
+            apps, reports, notesMoved, notesDropped, deleted, batches,
+            $"{deleted} exemplaire(s) en double supprime(s).");
     }
 
     // Diagnostic : vérifie la configuration et la réponse des sources à clé (sans exposer les clés).
