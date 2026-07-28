@@ -40,6 +40,86 @@ public class AdminController : ControllerBase
     // Entreprises fictives créées par le seed de démonstration.
     private static readonly string[] SeedCompanies = { "TechCorp", "CreativeStudio", "CloudNine", "StartupFlow", "FinancePlus" };
 
+    // Comptes fictifs du meme seed. Leurs mots de passe figurent dans Program.cs,
+    // sur un depot public : tant qu'un de ces comptes repond en production, ses
+    // acces sont ouverts a quiconque lit le code.
+    //
+    // Toute persona ajoutee au seed doit etre reportee ici, sinon l'inventaire la
+    // manquera.
+    private static readonly string[] SeedAccountEmails =
+    {
+        "admin@lpde.fr",
+        "sophie.martin@techcorp.fr", "lucas.bernard@creativestudio.fr", "emma.dubois@cloudnine.fr",
+        "thomas.petit@startupflow.fr", "marie.leroy@financeplus.fr",
+        "jean.dupont@email.fr", "alice.moreau@email.fr", "karim.benali@email.fr",
+        "camille.roux@email.fr", "hugo.lambert@email.fr",
+    };
+
+    private record SeedAccountReport(
+        string email, string role, DateTime createdAt,
+        int offersCreated, int applicationsReceived, int realApplicationsReceived, int applicationsSent);
+
+    /// <summary>
+    /// Admin : inventaire des comptes de démonstration encore présents et de ce qui
+    /// leur est rattaché. Lecture seule, ne modifie rien.
+    ///
+    /// Sert à décider avant de supprimer : un recruteur fictif peut porter des
+    /// offres sur lesquelles de vraies personnes ont postulé. Ces candidatures-là
+    /// sont le seul élément qui compte dans l'arbitrage — la cascade les emporterait
+    /// avec l'offre.
+    /// </summary>
+    [HttpGet("seed-accounts")]
+    public async Task<ActionResult<object>> GetSeedAccounts()
+    {
+        var users = await _context.Users
+            .Where(u => u.Email != null && SeedAccountEmails.Contains(u.Email))
+            .Select(u => new { u.Id, u.Email, u.Role, u.CreatedAt })
+            .ToListAsync();
+
+        var seedUserIds = users.Select(u => u.Id).ToList();
+        var report = new List<SeedAccountReport>();
+
+        foreach (var u in users)
+        {
+            var offerIds = await _context.JobOffers
+                .Where(j => j.CreatedByUserId == u.Id)
+                .Select(j => j.Id)
+                .ToListAsync();
+
+            var received = 0;
+            var realReceived = 0;
+            if (offerIds.Count > 0)
+            {
+                received = await _context.Applications.CountAsync(a => offerIds.Contains(a.JobOfferId));
+
+                // Candidature « reelle » : deposee par quelqu'un qui n'est pas une
+                // persona du seed. Le compte peut avoir ete supprime depuis, d'ou le
+                // second test sur l'adresse.
+                realReceived = await _context.Applications.CountAsync(a =>
+                    offerIds.Contains(a.JobOfferId)
+                    && (a.UserId == null || !seedUserIds.Contains(a.UserId))
+                    && !SeedAccountEmails.Contains(a.Email));
+            }
+
+            var sent = await _context.Applications.CountAsync(a => a.UserId == u.Id);
+
+            report.Add(new SeedAccountReport(
+                u.Email!, u.Role, u.CreatedAt, offerIds.Count, received, realReceived, sent));
+        }
+
+        var absent = SeedAccountEmails.Except(users.Select(u => u.Email!)).ToList();
+
+        return Ok(new
+        {
+            present = users.Count,
+            absent,
+            // Le chiffre qui decide : a zero, ces comptes ne portent aucune donnee
+            // reelle et peuvent partir. Au-dessus, il faut traiter avant.
+            realApplicationsAtRisk = report.Sum(r => r.realApplicationsReceived),
+            accounts = report.OrderByDescending(r => r.realApplicationsReceived).ThenBy(r => r.email),
+        });
+    }
+
     /// <summary>Admin : supprime les offres de démonstration seedées (candidatures liées supprimées en cascade).</summary>
     [HttpDelete("seed-offers")]
     public async Task<ActionResult<object>> DeleteSeedOffers()
