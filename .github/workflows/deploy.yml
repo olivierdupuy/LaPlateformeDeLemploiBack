@@ -28,8 +28,26 @@ jobs:
 
       - name: Override secrets in appsettings
         shell: pwsh
+        env:
+          # Passee par l'environnement et non interpolee dans le script : une cle
+          # contenant $ ou " casserait sinon le parsing PowerShell, voire y
+          # injecterait du code.
+          JWT_KEY: ${{ secrets.JWT_KEY }}
         run: |
           $appSettings = Get-Content "publish/appsettings.json" | ConvertFrom-Json
+          # La cle de signature JWT ne doit jamais venir du depot : quiconque la lit
+          # peut forger un jeton Admin sans posseder de compte. Absence de secret =
+          # arret du deploiement, plutot qu'une mise en ligne avec la cle publique.
+          $jwtKey = $env:JWT_KEY
+          if ([string]::IsNullOrWhiteSpace($jwtKey)) {
+            Write-Error "Secret JWT_KEY absent. Deploiement interrompu : publier la cle versionnee reviendrait a laisser l'API signer avec une cle connue de tous."
+            exit 1
+          }
+          if ($jwtKey.Length -lt 32) {
+            Write-Error "Secret JWT_KEY trop court ($($jwtKey.Length) caracteres). HMAC-SHA256 exige au moins 32 caracteres."
+            exit 1
+          }
+          $appSettings.Jwt.Key = $jwtKey
           $appSettings.ConnectionStrings.DefaultConnection = "${{ secrets.DB_CONNECTION_STRING }}"
           $appSettings.OpenAI.ApiKey = "${{ secrets.OPENAI_API_KEY }}"
           if ($appSettings.Firebase) { $appSettings.Firebase.ServerKey = "${{ secrets.FIREBASE_SERVER_KEY }}" }
