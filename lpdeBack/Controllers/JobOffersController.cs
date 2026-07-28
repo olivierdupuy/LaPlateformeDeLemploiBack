@@ -350,7 +350,13 @@ public class JobOffersController : ControllerBase
         page = page < 1 ? 1 : page;
         pageSize = pageSize is < 1 or > 100 ? 24 : pageSize;
 
-        var active = _context.JobOffers.Where(j => j.IsActive && j.ModerationStatus == "Approved");
+        // « Entreprise » est le repli des imports quand l'employeur n'est pas
+        // communique. Le laisser ici en ferait le premier employeur du site, avec
+        // des milliers d'offres sans rapport regroupees sous une fiche unique.
+        var active = _context.JobOffers.Where(j =>
+            j.IsActive && j.ModerationStatus == "Approved"
+            && j.Company != lpdeBack.Services.CompanyNames.Undisclosed);
+
         if (!string.IsNullOrWhiteSpace(search))
             active = active.Where(j => j.Company.Contains(search) || j.Location.Contains(search));
 
@@ -380,6 +386,11 @@ public class JobOffersController : ControllerBase
     public async Task<ActionResult<IEnumerable<JobOffer>>> GetByCompany(string companyName,
         [FromQuery] int page = 1, [FromQuery] int pageSize = 50)
     {
+        // Pas de fiche pour l'employeur non communique : la page n'aurait aucun sens,
+        // elle empilerait des milliers d'offres n'ayant que leur anonymat en commun.
+        if (lpdeBack.Services.CompanyNames.IsUndisclosed(companyName))
+            return NotFound(new { message = "Cet employeur n'est pas communique." });
+
         page = page < 1 ? 1 : page;
         pageSize = pageSize is < 1 or > 100 ? 50 : pageSize;
 
@@ -415,7 +426,9 @@ public class JobOffersController : ControllerBase
 
         // keyword : titres + entreprises
         var titles = await active.Where(j => j.Title.Contains(q)).Select(j => j.Title).Distinct().Take(6).ToListAsync();
-        var companies = await active.Where(j => j.Company.Contains(q)).Select(j => j.Company).Distinct().Take(4).ToListAsync();
+        var companies = await active
+            .Where(j => j.Company.Contains(q) && j.Company != lpdeBack.Services.CompanyNames.Undisclosed)
+            .Select(j => j.Company).Distinct().Take(4).ToListAsync();
         var suggestions = titles.Concat(companies).Distinct(StringComparer.OrdinalIgnoreCase).Take(8).ToList();
         return Ok(suggestions);
     }
