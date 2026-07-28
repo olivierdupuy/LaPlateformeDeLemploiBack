@@ -20,12 +20,90 @@ public class JobImportService
     private readonly IConfiguration _config;
     private readonly ILogger<JobImportService> _logger;
 
+    /// <summary>
+    /// Un seul import a la fois, tous points d'entree confondus. Le service est
+    /// enregistre en Scoped : le verrou doit donc etre statique pour couvrir le
+    /// timer de six heures et le declenchement admin, qui visent la meme base.
+    ///
+    /// Sans lui, deux passages simultanes constituent chacun leur liste de
+    /// deduplication avant que l'autre n'ait insere quoi que ce soit, concluent
+    /// tous deux que le catalogue est absent, et le reinserent en entier.
+    /// </summary>
+    private static readonly SemaphoreSlim ImportGate = new(1, 1);
+
+    /// <summary>Vrai tant qu'un import est en cours, quel qu'en soit le declencheur.</summary>
+    public static bool IsRunning { get; private set; }
+
+    /// <summary>Issue d'un import : <c>started</c> est faux si un autre etait deja en cours.</summary>
+    public record ImportOutcome(bool started, int added);
+
     public JobImportService(AppDbContext context, IHttpClientFactory httpFactory, IConfiguration config, ILogger<JobImportService> logger)
     {
         _context = context;
         _httpFactory = httpFactory;
         _config = config;
         _logger = logger;
+    }
+
+    /// <summary>
+    /// Compte les offres importees en double, sans rien modifier. L'exemplaire
+    /// conserve serait le plus ancien Id de chaque groupe ; tous les autres sont
+    /// comptes comme excedentaires.
+    ///
+    /// Les dependances portees par ces excedentaires sont comptees a part : leurs
+    /// tables sont en suppression en cascade, donc une purge naive detruirait ces
+    /// candidatures, favoris et signalements avec les lignes.
+    /// </summary>
+    public async Task<object> AnalyzeDuplicatesAsync(CancellationToken ct = default)
+    {
+        var imported = _context.JobOffers.Where(j => j.ExternalId != null);
+
+        var total = await _context.JobOffers.CountAsync(ct);
+        var withExternalId = await imported.CountAsync(ct);
+        var distinctExternalIds = await imported.Select(j => j.ExternalId).Distinct().CountAsync(ct);
+
+        var duplicatedGroups = await imported
+            .GroupBy(j => j.ExternalId)
+            .Where(g => g.Count() > 1)
+            .CountAsync(ct);
+
+        // Les survivants : un par ExternalId, le plus ancien.
+        var survivorIds = imported.GroupBy(j => j.ExternalId).Select(g => g.Min(x => x.Id));
+        var surplusIds = imported.Where(j => !survivorIds.Contains(j.Id)).Select(j => j.Id);
+
+        var applicationsAtRisk = await _context.Applications.CountAsync(a => surplusIds.Contains(a.JobOfferId), ct);
+        var notesAtRisk = await _context.JobNotes.CountAsync(n => surplusIds.Contains(n.JobOfferId), ct);
+        var reportsAtRisk = await _context.JobReports.CountAsync(r => surplusIds.Contains(r.JobOfferId), ct);
+
+        var sample = await imported
+            .GroupBy(j => j.ExternalId)
+            .Where(g => g.Count() > 1)
+            .OrderByDescending(g => g.Count())
+            .Take(10)
+            .Select(g => new
+            {
+                externalId = g.Key,
+                copies = g.Count(),
+                keepId = g.Min(x => x.Id),
+                ids = g.Select(x => x.Id).ToList(),
+            })
+            .ToListAsync(ct);
+
+        return new
+        {
+            totalOffers = total,
+            importedOffers = withExternalId,
+            distinctExternalIds,
+            duplicatedGroups,
+            surplusRows = withExternalId - distinctExternalIds,
+            atRisk = new
+            {
+                applications = applicationsAtRisk,
+                favourites = notesAtRisk,
+                reports = reportsAtRisk,
+            },
+            sample,
+        };
     }
 
     // Diagnostic : vérifie la configuration et la réponse des sources à clé (sans exposer les clés).
@@ -72,7 +150,33 @@ public class JobImportService
         return result;
     }
 
-    public async Task<int> ImportAllAsync(CancellationToken ct = default)
+    /// <summary>
+    /// Importe les offres, sauf si un import tourne deja : dans ce cas le passage
+    /// est abandonne plutot que mis en attente. Deux imports a la suite n'ont
+    /// aucun interet, et faire patienter le second rouvrirait la fenetre de
+    /// course des que le premier relacherait le verrou.
+    /// </summary>
+    public async Task<ImportOutcome> ImportAllAsync(CancellationToken ct = default)
+    {
+        if (!await ImportGate.WaitAsync(0, ct))
+        {
+            _logger.LogWarning("Import deja en cours : ce declenchement est ignore.");
+            return new ImportOutcome(false, 0);
+        }
+
+        IsRunning = true;
+        try
+        {
+            return new ImportOutcome(true, await ImportAllCoreAsync(ct));
+        }
+        finally
+        {
+            IsRunning = false;
+            ImportGate.Release();
+        }
+    }
+
+    private async Task<int> ImportAllCoreAsync(CancellationToken ct)
     {
         var existing = await _context.JobOffers
             .Where(j => j.ExternalId != null)

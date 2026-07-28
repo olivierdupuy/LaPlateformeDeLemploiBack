@@ -66,8 +66,11 @@ public class JobImportBackgroundService : BackgroundService
             }
 
             var svc = scope.ServiceProvider.GetRequiredService<JobImportService>();
-            var added = await svc.ImportAllAsync(ct);
-            _logger.LogInformation("Import automatique terminé : {Added} offres ajoutées.", added);
+            var outcome = await svc.ImportAllAsync(ct);
+            if (outcome.started)
+                _logger.LogInformation("Import automatique terminé : {Added} offres ajoutées.", outcome.added);
+            else
+                _logger.LogWarning("Import automatique ignoré : un import était déjà en cours.");
         }
         catch (Exception e)
         {

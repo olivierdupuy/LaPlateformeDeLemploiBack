@@ -22,18 +22,36 @@ public class ImportController : ControllerBase
     [HttpPost("jobs")]
     public IActionResult ImportJobs()
     {
+        // Refus immédiat si un import tourne déjà, pour que l'admin le voie plutôt
+        // que de croire son déclenchement pris en compte. Le verrou du service
+        // reste la vraie garantie : ce test-ci ne fait qu'éviter le faux espoir.
+        if (JobImportService.IsRunning)
+            return Conflict(new { message = "Un import est déjà en cours. Attendez qu'il se termine." });
+
         _ = Task.Run(async () =>
         {
             try
             {
                 using var scope = _scopeFactory.CreateScope();
                 var svc = scope.ServiceProvider.GetRequiredService<JobImportService>();
-                var n = await svc.ImportAllAsync(CancellationToken.None);
-                _logger.LogInformation("Import admin terminé : {N} offres ajoutées.", n);
+                var outcome = await svc.ImportAllAsync(CancellationToken.None);
+                if (outcome.started)
+                    _logger.LogInformation("Import admin terminé : {N} offres ajoutées.", outcome.added);
+                else
+                    _logger.LogWarning("Import admin abandonné : un autre import était en cours.");
             }
             catch (Exception ex) { _logger.LogError(ex, "Import admin en échec"); }
         });
         return Accepted(new { message = "Import lancé en arrière-plan. Les nouvelles offres apparaîtront dans quelques minutes." });
+    }
+
+    /// <summary>Admin : compter les offres importées en double. Lecture seule, ne modifie rien.</summary>
+    [HttpGet("duplicates")]
+    public async Task<ActionResult<object>> Duplicates()
+    {
+        using var scope = _scopeFactory.CreateScope();
+        var svc = scope.ServiceProvider.GetRequiredService<JobImportService>();
+        return Ok(await svc.AnalyzeDuplicatesAsync(HttpContext.RequestAborted));
     }
 
     /// <summary>Admin : diagnostic des sources d'import à clé (statut HTTP, nb de résultats).</summary>
