@@ -197,8 +197,21 @@ using (var scope = app.Services.CreateScope())
             await roleManager.CreateAsync(new IdentityRole(role));
     }
 
-    // Skip seed if data already exists
-    if (!db.JobOffers.Any())
+    // ── Jeu de demonstration ──
+    // Comptes, offres et candidatures fictifs : cela n'a de sens qu'en
+    // developpement. Ce bloc s'executait jusqu'ici quel que soit
+    // l'environnement, et sa branche « else » recreait en production un compte
+    // Admin dont le mot de passe figure dans ce fichier, sur un depot public.
+    //
+    // Migrations, rattrapages, reglages de plateforme et roles restent au-dessus :
+    // eux doivent bien s'executer partout.
+    var seedDemoData = app.Environment.IsDevelopment();
+
+    // Configurable pour qu'aucun mot de passe, meme de demonstration, ne soit
+    // fige ici. La valeur de repli ne sert que sur un poste de developpement.
+    var demoAdminPassword = app.Configuration["Seed:AdminPassword"] ?? "Admin123!";
+
+    if (seedDemoData && !db.JobOffers.Any())
     {
         // ── Users ──
         async Task<AppUser> CreateUser(AppUser user, string password)
@@ -211,7 +224,7 @@ using (var scope = app.Services.CreateScope())
         }
 
         // Admin
-        var admin = await CreateUser(new AppUser { Email = "admin@lpde.fr", FirstName = "Admin", LastName = "LPDE", Role = "Admin", Bio = "Administrateur de la plateforme." }, "Admin123!");
+        var admin = await CreateUser(new AppUser { Email = "admin@lpde.fr", FirstName = "Admin", LastName = "LPDE", Role = "Admin", Bio = "Administrateur de la plateforme." }, demoAdminPassword);
 
         // Recruiters
         var sophie = await CreateUser(new AppUser { Email = "sophie.martin@techcorp.fr", FirstName = "Sophie", LastName = "Martin", Role = "Recruiter", Company = "TechCorp", PhoneNumber = "06 11 22 33 44", City = "Paris", Title = "Responsable recrutement", Bio = "Responsable recrutement chez TechCorp, specialisee dans les profils tech et innovation." }, "Recruiter123!");
@@ -283,13 +296,13 @@ using (var scope = app.Services.CreateScope())
         db.Applications.AddRange(applications);
         await db.SaveChangesAsync();
     }
-    else
+    else if (seedDemoData)
     {
-        // Just ensure admin exists even if data is already seeded
+        // Base de developpement deja peuplee : on garantit seulement l'admin.
         if (await userManager.FindByEmailAsync("admin@lpde.fr") == null)
         {
             var admin = new AppUser { UserName = "admin@lpde.fr", Email = "admin@lpde.fr", FirstName = "Admin", LastName = "LPDE", Role = "Admin", EmailConfirmed = true };
-            await userManager.CreateAsync(admin, "Admin123!");
+            await userManager.CreateAsync(admin, demoAdminPassword);
             await userManager.AddToRoleAsync(admin, "Admin");
         }
     }
