@@ -40,6 +40,14 @@ public class Application
     [MaxLength(4000)]
     public string? ScreeningAnswers { get; set; } // Reponses aux questions de preselection (JSON: [{question, answer}])
 
+    [MaxLength(100)]
+    public string? City { get; set; } // Ville du candidat, saisie a l'etape « Coordonnees »
+
+    /// <summary>Part des reponses de preselection conformes a ce qu'attend le
+    /// recruteur, en pourcentage. Null si l'offre ne pose aucune question a
+    /// reponse ideale.</summary>
+    public int? QualificationScore { get; set; }
+
     public DateTime AppliedAt { get; set; } = DateTime.UtcNow;
 
     /// <summary>Le candidat a range cette candidature : elle sort de sa vue

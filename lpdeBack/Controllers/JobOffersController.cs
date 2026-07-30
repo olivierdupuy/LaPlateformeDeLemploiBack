@@ -60,7 +60,7 @@ public class JobOffersController : ControllerBase
             .Where(j => j.IsActive && j.ExpiresAt != null && j.ExpiresAt < DateTime.UtcNow)
             .ExecuteUpdateAsync(s => s.SetProperty(j => j.IsActive, false));
 
-        var query = _context.JobOffers.Where(j => j.IsActive && j.ModerationStatus == "Approved").AsQueryable();
+        var query = _context.JobOffers.Where(j => j.IsActive && !j.IsDraft && j.ModerationStatus == "Approved").AsQueryable();
 
         if (!string.IsNullOrWhiteSpace(search))
             query = query.Where(j => j.Title.Contains(search) || j.Company.Contains(search) || j.Description.Contains(search));
@@ -150,6 +150,10 @@ public class JobOffersController : ControllerBase
         var userId = GetUserId();
         var job = await _context.JobOffers.Include(j => j.Applications).FirstOrDefaultAsync(j => j.Id == id);
         if (job == null) return NotFound();
+
+        // Un brouillon n'existe que pour son auteur (et l'administration) :
+        // sans ce garde-fou, l'adresse directe le rendrait public.
+        if (job.IsDraft && !IsAdmin() && job.CreatedByUserId != userId) return NotFound();
 
         // Increment view count
         job.ViewCount++;
@@ -568,6 +572,7 @@ public class JobOffersController : ControllerBase
         var job = await _context.JobOffers.FindAsync(id);
         if (job == null) return NotFound();
         if (!IsAdmin() && job.CreatedByUserId != GetUserId()) return Forbid();
+        if (job.IsDraft) return BadRequest(new { message = "Ce brouillon n'a jamais ete publie : terminez sa redaction pour le mettre en ligne." });
 
         var durationStr = await _context.PlatformSettings
             .Where(s => s.Key == "default_offer_duration")
@@ -1206,7 +1211,9 @@ public class JobOffersController : ControllerBase
 
         // Admins bypass moderation
         var isAdmin = IsAdmin();
-        var needsReview = requireModeration && !isAdmin;
+        // Un brouillon n'est pas soumis a moderation : il ne sera relu qu'au moment
+        // ou le recruteur decidera de le publier.
+        var needsReview = requireModeration && !isAdmin && !dto.IsDraft;
 
         // Get default offer duration from settings
         var durationStr = await _context.PlatformSettings
@@ -1240,10 +1247,26 @@ public class JobOffersController : ControllerBase
             EasyApply = dto.EasyApply,
             ScreeningQuestions = dto.ScreeningQuestions,
             AutoReplyMessage = dto.AutoReplyMessage,
+            Openings = dto.Openings < 1 ? 1 : dto.Openings,
+            WorkplaceType = dto.WorkplaceType,
+            Address = dto.Address,
+            SalaryPeriod = dto.SalaryPeriod,
+            SupplementalPay = dto.SupplementalPay,
+            ContractDuration = dto.ContractDuration,
+            HoursPerWeek = dto.HoursPerWeek,
+            StartDate = dto.StartDate,
+            ApplicationEmail = dto.ApplicationEmail,
+            RequireResume = dto.RequireResume,
+            IsDraft = dto.IsDraft,
             CreatedByUserId = GetUserId(),
             ModerationStatus = needsReview ? "Pending" : "Approved",
-            IsActive = !needsReview,
+            IsActive = !needsReview && !dto.IsDraft,
         };
+
+        // Le type de lieu de travail est la source de verite du drapeau teletravail,
+        // sur lequel repose le filtre de recherche.
+        if (!string.IsNullOrWhiteSpace(job.WorkplaceType))
+            job.IsRemote = job.WorkplaceType is "Télétravail" or "Hybride";
 
         // Geocodage du lieu pour la recherche par rayon
         var geo = lpdeBack.Services.GeoUtils.Geocode(job.Location);
@@ -1285,15 +1308,46 @@ public class JobOffersController : ControllerBase
         job.EasyApply = dto.EasyApply;
         job.ScreeningQuestions = dto.ScreeningQuestions;
         job.AutoReplyMessage = dto.AutoReplyMessage;
-        job.IsActive = dto.IsActive;
+        job.Openings = dto.Openings < 1 ? 1 : dto.Openings;
+        job.WorkplaceType = dto.WorkplaceType;
+        job.Address = dto.Address;
+        job.SalaryPeriod = dto.SalaryPeriod;
+        job.SupplementalPay = dto.SupplementalPay;
+        job.ContractDuration = dto.ContractDuration;
+        job.HoursPerWeek = dto.HoursPerWeek;
+        job.StartDate = dto.StartDate;
+        job.ApplicationEmail = dto.ApplicationEmail;
+        job.RequireResume = dto.RequireResume;
+
+        // Passage brouillon -> publie : l'offre reprend le cycle de vie normal
+        // (duree d'affichage par defaut si aucune echeance n'a ete fixee).
+        var wasDraft = job.IsDraft;
+        job.IsDraft = dto.IsDraft;
+        // Un brouillon etait inactif par construction : le publier doit le
+        // rendre visible, quel que soit l'etat que porte le formulaire.
+        job.IsActive = dto.IsDraft ? false : (wasDraft || dto.IsActive);
+        // Un brouillon peut avoir dormi plus longtemps que sa duree d'affichage :
+        // sans cette remise a zero, il serait retire des sa publication.
+        if (wasDraft && !dto.IsDraft && (job.ExpiresAt == null || job.ExpiresAt < DateTime.UtcNow))
+        {
+            var durationStr = await _context.PlatformSettings
+                .Where(s => s.Key == "default_offer_duration")
+                .Select(s => s.Value)
+                .FirstOrDefaultAsync();
+            job.ExpiresAt = DateTime.UtcNow.AddDays(int.TryParse(durationStr, out var dd) ? dd : 30);
+        }
+
+        if (!string.IsNullOrWhiteSpace(job.WorkplaceType))
+            job.IsRemote = job.WorkplaceType is "Télétravail" or "Hybride";
 
         // Re-geocodage du lieu (peut avoir change)
         var geo = lpdeBack.Services.GeoUtils.Geocode(job.Location);
         job.Latitude = geo?.Lat;
         job.Longitude = geo?.Lng;
 
-        // Re-submit to moderation if moderation is enabled (admin bypass)
-        if (!IsAdmin())
+        // Re-submit to moderation if moderation is enabled (admin bypass).
+        // Un brouillon n'est pas concerne : rien n'est encore publie.
+        if (!IsAdmin() && !job.IsDraft)
         {
             var requireModeration = await _context.PlatformSettings
                 .Where(s => s.Key == "require_moderation")

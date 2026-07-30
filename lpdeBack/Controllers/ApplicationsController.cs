@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using System.Security.Claims;
+using System.Text.Json;
 using Microsoft.AspNetCore.SignalR;
 using lpdeBack.Data;
 using lpdeBack.Models;
@@ -28,6 +29,101 @@ public class ApplicationsController : ControllerBase
 
     private string? GetUserId() => User.FindFirstValue(ClaimTypes.NameIdentifier);
     private bool IsAdmin() => User.IsInRole("Admin");
+
+    /// <summary>Vrai si une question de preselection obligatoire reste sans
+    /// reponse. Le tunnel de candidature l'empeche deja, mais l'API reste
+    /// atteignable directement.</summary>
+    private static bool HasMissingRequiredAnswers(string? questionsJson, string? answersJson)
+    {
+        if (string.IsNullOrWhiteSpace(questionsJson)) return false;
+
+        try
+        {
+            using var questions = JsonDocument.Parse(questionsJson);
+            if (questions.RootElement.ValueKind != JsonValueKind.Array) return false;
+            if (questions.RootElement.GetArrayLength() == 0) return false;
+
+            var given = new List<string>();
+            if (!string.IsNullOrWhiteSpace(answersJson))
+            {
+                using var answers = JsonDocument.Parse(answersJson);
+                if (answers.RootElement.ValueKind == JsonValueKind.Array)
+                {
+                    given = answers.RootElement.EnumerateArray()
+                        .Select(a => a.ValueKind == JsonValueKind.Object && a.TryGetProperty("answer", out var v)
+                            ? v.GetString() ?? string.Empty
+                            : string.Empty)
+                        .ToList();
+                }
+            }
+
+            var index = 0;
+            foreach (var q in questions.RootElement.EnumerateArray())
+            {
+                // Ancien format (chaine nue) : la reponse a toujours ete exigee.
+                var required = q.ValueKind != JsonValueKind.Object
+                    || !q.TryGetProperty("required", out var r)
+                    || r.ValueKind != JsonValueKind.False;
+
+                if (required && (index >= given.Count || string.IsNullOrWhiteSpace(given[index])))
+                    return true;
+                index++;
+            }
+            return false;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>Part des criteres de preselection satisfaits, en pourcentage.
+    /// Le recruteur peut associer une reponse ideale a ses questions ; on compare
+    /// les reponses du candidat, dans l'ordre des questions. Renvoie null si
+    /// l'offre ne definit aucune reponse ideale (rien a mesurer).</summary>
+    private static int? ComputeQualificationScore(string? questionsJson, string? answersJson)
+    {
+        if (string.IsNullOrWhiteSpace(questionsJson) || string.IsNullOrWhiteSpace(answersJson))
+            return null;
+
+        try
+        {
+            using var questions = JsonDocument.Parse(questionsJson);
+            using var answers = JsonDocument.Parse(answersJson);
+            if (questions.RootElement.ValueKind != JsonValueKind.Array
+                || answers.RootElement.ValueKind != JsonValueKind.Array) return null;
+
+            var given = answers.RootElement.EnumerateArray()
+                .Select(a => a.ValueKind == JsonValueKind.Object && a.TryGetProperty("answer", out var v)
+                    ? v.GetString() ?? string.Empty
+                    : string.Empty)
+                .ToList();
+
+            int expected = 0, met = 0;
+            var index = 0;
+            foreach (var q in questions.RootElement.EnumerateArray())
+            {
+                // L'ancien format (simple chaine) ne porte aucune reponse ideale.
+                if (q.ValueKind == JsonValueKind.Object
+                    && q.TryGetProperty("idealAnswer", out var ideal)
+                    && ideal.ValueKind == JsonValueKind.String
+                    && !string.IsNullOrWhiteSpace(ideal.GetString()))
+                {
+                    expected++;
+                    if (index < given.Count
+                        && string.Equals(given[index].Trim(), ideal.GetString()!.Trim(), StringComparison.OrdinalIgnoreCase))
+                        met++;
+                }
+                index++;
+            }
+
+            return expected == 0 ? null : (int)Math.Round(met * 100.0 / expected);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
 
     // ── Recruteur/Admin ──
 
@@ -311,6 +407,16 @@ public class ApplicationsController : ControllerBase
         if (!string.IsNullOrEmpty(job.ExternalSource))
             return BadRequest(new { message = "Cette offre provient d'un site partenaire. Postulez directement sur le site d'origine." });
 
+        if (job.IsDraft)
+            return BadRequest(new { message = "Cette offre n'est pas encore publiée." });
+
+        var resumeUrl = string.IsNullOrWhiteSpace(dto.ResumeUrl) ? user.ResumeUrl : dto.ResumeUrl;
+        if (job.RequireResume && string.IsNullOrWhiteSpace(resumeUrl))
+            return BadRequest(new { message = "Ce recruteur exige un CV : ajoutez-en un pour postuler." });
+
+        if (HasMissingRequiredAnswers(job.ScreeningQuestions, dto.ScreeningAnswers))
+            return BadRequest(new { message = "Répondez aux questions de présélection du recruteur pour postuler." });
+
         var alreadyApplied = await _context.Applications.AnyAsync(a => a.JobOfferId == dto.JobOfferId && a.UserId == userId);
         if (alreadyApplied) return BadRequest("Vous avez deja postule a cette offre.");
 
@@ -333,9 +439,13 @@ public class ApplicationsController : ControllerBase
             Email = user.Email!,
             Phone = dto.Phone ?? user.PhoneNumber,
             CoverLetter = dto.CoverLetter,
-            ResumeUrl = user.ResumeUrl,
+            ResumeUrl = resumeUrl,
+            City = string.IsNullOrWhiteSpace(dto.City) ? user.City : dto.City,
+            AvailableFrom = dto.AvailableFrom,
+            SalaryExpectation = dto.SalaryExpectation,
             Source = string.IsNullOrWhiteSpace(dto.Source) ? "Plateforme" : dto.Source,
             ScreeningAnswers = dto.ScreeningAnswers,
+            QualificationScore = ComputeQualificationScore(job.ScreeningQuestions, dto.ScreeningAnswers),
             UserId = userId
         };
 
@@ -384,6 +494,30 @@ public class ApplicationsController : ControllerBase
             await _pushService.SendToUser(job.CreatedByUserId, "Nouvelle candidature",
                 $"{user.FirstName} {user.LastName} a postule a \"{job.Title}\"",
                 "/tabs/recruiter-applications");
+        }
+
+        // Adresse de reception choisie a la publication : si elle correspond a un
+        // compte de la plateforme (assistant, boite de recrutement partagee),
+        // cette personne est notifiee elle aussi.
+        if (!string.IsNullOrWhiteSpace(job.ApplicationEmail))
+        {
+            var alt = await _context.Users
+                .FirstOrDefaultAsync(u => u.Email == job.ApplicationEmail && u.Id != job.CreatedByUserId);
+            if (alt != null)
+            {
+                _context.Notifications.Add(new Notification
+                {
+                    UserId = alt.Id,
+                    Title = "Nouvelle candidature",
+                    Message = $"{user.FirstName} {user.LastName} a postule a l'offre \"{job.Title}\".",
+                    Link = "/recruteur/candidatures",
+                    Type = "NouveauCandidat"
+                });
+                await _context.SaveChangesAsync();
+
+                foreach (var connId in ChatHub.GetConnectionIds(alt.Id))
+                    await _hubContext.Clients.Client(connId).SendAsync("NewNotification");
+            }
         }
 
         return CreatedAtAction(nameof(GetById), new { id = app.Id }, app);

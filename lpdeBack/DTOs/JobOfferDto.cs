@@ -25,6 +25,20 @@ public class JobOfferCreateDto
     public bool EasyApply { get; set; } = true;
     public string? ScreeningQuestions { get; set; }
     public string? AutoReplyMessage { get; set; }
+
+    // Depot d'offre (tunnel type Indeed)
+    public int Openings { get; set; } = 1;
+    public string? WorkplaceType { get; set; }
+    public string? Address { get; set; }
+    public string? SalaryPeriod { get; set; }
+    public string? SupplementalPay { get; set; }
+    public string? ContractDuration { get; set; }
+    public int? HoursPerWeek { get; set; }
+    public DateTime? StartDate { get; set; }
+    public string? ApplicationEmail { get; set; }
+    public bool RequireResume { get; set; } = true;
+    /// <summary>Enregistrer sans publier : l'offre reste invisible des candidats.</summary>
+    public bool IsDraft { get; set; }
 }
 
 public class JobOfferUpdateDto : JobOfferCreateDto

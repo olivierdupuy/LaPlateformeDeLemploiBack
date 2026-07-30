@@ -28,21 +28,30 @@ public class RecruiterFeaturesController : ControllerBase
         if (src == null) return NotFound();
         if (!IsAdmin() && src.CreatedByUserId != UserId()) return Forbid();
 
-        var requireModeration = await _context.PlatformSettings
-            .Where(s => s.Key == "require_moderation").Select(s => s.Value).FirstOrDefaultAsync() == "true";
         var durationStr = await _context.PlatformSettings
             .Where(s => s.Key == "default_offer_duration").Select(s => s.Value).FirstOrDefaultAsync();
         var duration = int.TryParse(durationStr, out var d) ? d : 30;
-        var needsReview = requireModeration && !IsAdmin();
 
+        // La copie part en brouillon : elle porte « (copie) » dans son titre et
+        // attend d'etre relue dans le tunnel de publication avant d'etre
+        // proposee aux candidats.
         var dup = new JobOffer
         {
             Title = src.Title + " (copie)",
             Company = src.Company,
             Location = src.Location,
+            Address = src.Address,
+            WorkplaceType = src.WorkplaceType,
             Description = src.Description,
             ContractType = src.ContractType,
+            ContractDuration = src.ContractDuration,
+            WorkSchedule = src.WorkSchedule,
+            HoursPerWeek = src.HoursPerWeek,
+            StartDate = src.StartDate,
+            Openings = src.Openings,
             Salary = src.Salary,
+            SalaryPeriod = src.SalaryPeriod,
+            SupplementalPay = src.SupplementalPay,
             Category = src.Category,
             IsRemote = src.IsRemote,
             Tags = src.Tags,
@@ -50,14 +59,23 @@ public class RecruiterFeaturesController : ControllerBase
             MaxSalary = src.MaxSalary,
             ExperienceRequired = src.ExperienceRequired,
             EducationLevel = src.EducationLevel,
+            Languages = src.Languages,
             Benefits = src.Benefits,
             CompanyDescription = src.CompanyDescription,
             CompanyLogoUrl = src.CompanyLogoUrl,
             IsUrgent = src.IsUrgent,
+            EasyApply = src.EasyApply,
+            RequireResume = src.RequireResume,
+            ApplicationEmail = src.ApplicationEmail,
+            ScreeningQuestions = src.ScreeningQuestions,
+            AutoReplyMessage = src.AutoReplyMessage,
+            Latitude = src.Latitude,
+            Longitude = src.Longitude,
             CreatedByUserId = UserId(),
             ExpiresAt = DateTime.UtcNow.AddDays(duration),
-            ModerationStatus = needsReview ? "Pending" : "Approved",
-            IsActive = !needsReview,
+            ModerationStatus = "Approved",
+            IsDraft = true,
+            IsActive = false,
         };
 
         _context.JobOffers.Add(dup);

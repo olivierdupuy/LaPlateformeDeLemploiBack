@@ -70,11 +70,47 @@ public class JobOffer
 
     public bool EasyApply { get; set; } = true; // Candidature simplifiee (1 clic sur la plateforme)
 
-    [MaxLength(2000)]
-    public string? ScreeningQuestions { get; set; } // Questions de preselection (tableau JSON de chaines)
+    [MaxLength(4000)]
+    // Questions de preselection. Format riche : [{ text, type, options, required, idealAnswer }].
+    // L'ancien format (tableau JSON de chaines) reste lu tel quel par le front.
+    public string? ScreeningQuestions { get; set; }
 
     [MaxLength(500)]
     public string? AutoReplyMessage { get; set; } // Reponse automatique envoyee au candidat a la reception de sa candidature
+
+    // ── Depot d'offre : precisions du poste ──
+
+    public int Openings { get; set; } = 1; // Nombre de postes a pourvoir
+
+    [MaxLength(30)]
+    public string? WorkplaceType { get; set; } // Sur site, Hybride, Teletravail
+
+    [MaxLength(250)]
+    public string? Address { get; set; } // Adresse precise du lieu de travail
+
+    [MaxLength(20)]
+    public string? SalaryPeriod { get; set; } // heure, mois, an (periodicite de MinSalary/MaxSalary)
+
+    [MaxLength(300)]
+    public string? SupplementalPay { get; set; } // Primes (virgules) : 13e mois, primes sur objectifs...
+
+    [MaxLength(100)]
+    public string? ContractDuration { get; set; } // Duree du CDD / stage / alternance
+
+    public int? HoursPerWeek { get; set; } // Nombre d'heures par semaine
+
+    public DateTime? StartDate { get; set; } // Date de prise de poste souhaitee
+
+    // ── Depot d'offre : reception des candidatures ──
+
+    [MaxLength(150)]
+    public string? ApplicationEmail { get; set; } // Email de notification des nouvelles candidatures
+
+    public bool RequireResume { get; set; } = true; // Le CV est-il obligatoire pour postuler
+
+    /// <summary>Offre enregistree en brouillon : jamais visible des candidats,
+    /// reprise possible depuis « Mes offres ».</summary>
+    public bool IsDraft { get; set; } = false;
 
     // Geolocalisation (pour la recherche par rayon)
     public double? Latitude { get; set; }

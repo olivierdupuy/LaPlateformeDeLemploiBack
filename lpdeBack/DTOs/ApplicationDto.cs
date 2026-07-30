@@ -10,6 +10,11 @@ public class ApplicationCreateDto
     public string? ResumeUrl { get; set; }
     public string? Source { get; set; }
     public string? ScreeningAnswers { get; set; }
+
+    // Tunnel de candidature (type Indeed)
+    public string? City { get; set; }
+    public DateTime? AvailableFrom { get; set; }
+    public string? SalaryExpectation { get; set; }
 }
 
 public class ApplicationUpdateStatusDto
