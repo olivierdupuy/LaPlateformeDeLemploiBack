@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
 using System.Text;
 using FirebaseAdmin;
@@ -109,6 +110,33 @@ builder.Services.AddScoped<lpdeBack.Services.JobImportService>();
 // survit a la requete qui l'a rempli.
 builder.Services.AddSingleton<lpdeBack.Services.FranceTravailService>();
 builder.Services.AddHostedService<lpdeBack.Services.JobImportBackgroundService>();
+
+// ── Modele de langage (analyse de CV, redaction assistee) ──
+// Contrat « chat/completions » d'OpenAI, servi aussi bien par OpenAI que par
+// un Ollama, un llama.cpp ou un LM Studio installes sur le reseau local.
+builder.Services.Configure<lpdeBack.Services.AiOptions>(builder.Configuration.GetSection("Ai"));
+builder.Services.AddScoped<lpdeBack.Services.AiClient>();
+builder.Services
+    .AddHttpClient(lpdeBack.Services.AiClient.HttpClientName, (provider, client) =>
+    {
+        var options = provider.GetRequiredService<IOptions<lpdeBack.Services.AiOptions>>().Value;
+        // Un modele local met des dizaines de secondes a analyser un CV entier :
+        // le delai par defaut de 100 s couperait la reponse en plein milieu.
+        client.Timeout = TimeSpan.FromSeconds(options.TimeoutSeconds);
+    })
+    .ConfigurePrimaryHttpMessageHandler(provider =>
+    {
+        var options = provider.GetRequiredService<IOptions<lpdeBack.Services.AiOptions>>().Value;
+        var handler = new HttpClientHandler();
+        if (options.AcceptInvalidCertificate)
+        {
+            // Reserve a un serveur de confiance du reseau local dont le
+            // certificat est auto-signe. Ne concerne que ce client HTTP.
+            handler.ServerCertificateCustomValidationCallback =
+                HttpClientHandler.DangerousAcceptAnyServerCertificateValidator;
+        }
+        return handler;
+    });
 
 builder.Services.AddCors(options =>
 {

@@ -49,7 +49,10 @@ jobs:
           }
           $appSettings.Jwt.Key = $jwtKey
           $appSettings.ConnectionStrings.DefaultConnection = "${{ secrets.DB_CONNECTION_STRING }}"
-          $appSettings.OpenAI.ApiKey = "${{ secrets.OPENAI_API_KEY }}"
+          # Cle du modele de langage (Mistral). La section s'appelle « Ai » depuis
+          # que le fournisseur est configurable : viser « OpenAI » ne mettait plus
+          # la cle nulle part, et l'analyse de CV repondait 503 en production.
+          if ($appSettings.Ai) { $appSettings.Ai.ApiKey = "${{ secrets.MISTRAL_API_KEY }}" }
           if ($appSettings.Firebase) { $appSettings.Firebase.ServerKey = "${{ secrets.FIREBASE_SERVER_KEY }}" }
           if ($appSettings.FranceTravail) {
             $appSettings.FranceTravail.ClientId = "${{ secrets.FRANCETRAVAIL_CLIENT_ID }}"

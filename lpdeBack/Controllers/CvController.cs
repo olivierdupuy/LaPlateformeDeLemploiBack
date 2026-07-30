@@ -12,6 +12,7 @@ using iText.Kernel.Pdf.Canvas.Parser.Listener;
 using lpdeBack.Data;
 using lpdeBack.Models;
 using lpdeBack.DTOs;
+using lpdeBack.Services;
 
 namespace lpdeBack.Controllers;
 
@@ -21,19 +22,89 @@ namespace lpdeBack.Controllers;
 public class CvController : ControllerBase
 {
     private readonly AppDbContext _context;
-    private readonly IConfiguration _config;
-    private readonly IHttpClientFactory _httpClientFactory;
+    private readonly AiClient _ai;
 
     private static readonly string[] ValidTypes = { "Experience", "Formation", "Langue", "Competence", "CentreInteret", "Projet" };
 
-    public CvController(AppDbContext context, IConfiguration config, IHttpClientFactory httpClientFactory)
+    public CvController(AppDbContext context, AiClient ai)
     {
         _context = context;
-        _config = config;
-        _httpClientFactory = httpClientFactory;
+        _ai = ai;
     }
 
     private string GetUserId() => User.FindFirstValue(ClaimTypes.NameIdentifier)!;
+
+    /// <summary>
+    /// Ramene le libelle de categorie produit par le modele vers l'un des six
+    /// types attendus. Un modele ouvert ecrit volontiers « Competences » ou
+    /// « Expérience » : sans cette remise en forme, ces sections — pourtant
+    /// correctement extraites — seraient silencieusement jetees.
+    /// </summary>
+    private static string? NormalizeSectionType(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return null;
+
+        var key = new string(raw
+            .Normalize(NormalizationForm.FormD)
+            .Where(c => System.Globalization.CharUnicodeInfo.GetUnicodeCategory(c)
+                        != System.Globalization.UnicodeCategory.NonSpacingMark)
+            .Where(char.IsLetter)
+            .ToArray()).ToLowerInvariant();
+
+        if (key.StartsWith("experience")) return "Experience";
+        if (key.StartsWith("formation") || key.StartsWith("education") || key.StartsWith("diplome")) return "Formation";
+        if (key.StartsWith("langue")) return "Langue";
+        if (key.StartsWith("competence") || key.StartsWith("skill")) return "Competence";
+        if (key.StartsWith("centreinteret") || key.StartsWith("interet") || key.StartsWith("loisir")
+            || key.StartsWith("hobb")) return "CentreInteret";
+        if (key.StartsWith("projet") || key.StartsWith("project")) return "Projet";
+        return null;
+    }
+
+    /// <summary>Remet les categories en forme puis ecarte ce qui reste inclassable.</summary>
+    private static List<CvSectionCreateDto> KeepUsableSections(IEnumerable<CvSectionCreateDto> sections)
+    {
+        var kept = new List<CvSectionCreateDto>();
+        foreach (var section in sections)
+        {
+            var type = NormalizeSectionType(section.SectionType);
+            if (type == null || string.IsNullOrWhiteSpace(section.Title)) continue;
+            section.SectionType = type;
+            kept.Add(section);
+        }
+        return kept;
+    }
+
+    /// <summary>Lit la reponse du modele, qu'elle soit un tableau ou un objet « sections ».</summary>
+    private static List<CvSectionCreateDto>? ReadSections(string content)
+    {
+        try
+        {
+            if (content.TrimStart().StartsWith('['))
+                return JsonSerializer.Deserialize<List<CvSectionCreateDto>>(content, FlexibleJson.Options);
+
+            var wrapper = JsonSerializer.Deserialize<AiGenerateResponseDto>(content, FlexibleJson.Options);
+            if (wrapper?.Sections is { Count: > 0 }) return wrapper.Sections;
+        }
+        catch (JsonException)
+        {
+            // On retente sur le premier tableau rencontre : certains modeles
+            // ajoutent une phrase avant ou apres le JSON demande.
+        }
+
+        var start = content.IndexOf('[');
+        var end = content.LastIndexOf(']');
+        if (start < 0 || end <= start) return null;
+
+        try
+        {
+            return JsonSerializer.Deserialize<List<CvSectionCreateDto>>(content[start..(end + 1)], FlexibleJson.Options);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
 
     [HttpGet]
     public async Task<ActionResult<IEnumerable<CvSection>>> GetAll()
@@ -130,101 +201,38 @@ public class CvController : ControllerBase
         return NoContent();
     }
 
-    // ═══ OpenAI Generation ═══
+    // ═══ Generation par le modele de langage ═══
 
     [HttpPost("generate-ai")]
     public async Task<ActionResult<List<CvSectionCreateDto>>> GenerateWithAi(AiGenerateRequestDto? dto)
     {
-        var apiKey = _config["OpenAI:ApiKey"];
-        if (string.IsNullOrEmpty(apiKey))
-            return StatusCode(503, new { message = "Cle API OpenAI non configuree. Ajoutez OpenAI:ApiKey dans appsettings.json." });
-
         var user = await _context.Users.FindAsync(GetUserId());
         if (user == null) return Unauthorized();
 
         var prompt = BuildPrompt(user, dto?.AdditionalContext);
 
-        try
-        {
-            var client = _httpClientFactory.CreateClient();
-            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
+        var result = await _ai.ChatAsync(
+            "Tu es un assistant RH expert en redaction de CV professionnels en francais. Reponds UNIQUEMENT avec un JSON valide.",
+            prompt,
+            temperature: 0.7,
+            maxTokens: 3000,
+            cancellationToken: HttpContext.RequestAborted);
 
-            var requestBody = new
-            {
-                model = "gpt-4o-mini",
-                messages = new object[]
-                {
-                    new { role = "system", content = "Tu es un assistant RH expert en redaction de CV professionnels en francais. Reponds UNIQUEMENT avec un JSON valide." },
-                    new { role = "user", content = prompt }
-                },
-                temperature = 0.7,
-                max_tokens = 3000
-            };
+        if (!result.Ok)
+            return StatusCode(result.Status, new { message = result.Error });
 
-            var response = await client.PostAsJsonAsync("https://api.openai.com/v1/chat/completions", requestBody);
+        var sections = ReadSections(result.Content!);
+        if (sections == null)
+            return BadRequest(new { message = "Reponse du modele illisible. Reessayez." });
 
-            if (!response.IsSuccessStatusCode)
-            {
-                var error = await response.Content.ReadAsStringAsync();
-                return StatusCode(502, new { message = $"Erreur API OpenAI: {response.StatusCode}", detail = error });
-            }
+        sections = KeepUsableSections(sections);
+        if (sections.Count == 0)
+            return BadRequest(new { message = "Aucune section exploitable n'a ete generee. Reessayez." });
 
-            var json = await response.Content.ReadAsStringAsync();
-            using var doc = JsonDocument.Parse(json);
-            var content = doc.RootElement
-                .GetProperty("choices")[0]
-                .GetProperty("message")
-                .GetProperty("content")
-                .GetString();
-
-            if (string.IsNullOrEmpty(content))
-                return StatusCode(502, new { message = "Reponse vide de l'IA." });
-
-            // Parse the JSON response — handle both array and object with "sections" key
-            var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
-            List<CvSectionCreateDto>? sections;
-
-            try
-            {
-                // Try parsing as { "sections": [...] }
-                var wrapper = JsonSerializer.Deserialize<AiGenerateResponseDto>(content, options);
-                sections = wrapper?.Sections;
-
-                // If no sections found, try parsing as direct array
-                if (sections == null || sections.Count == 0)
-                    sections = JsonSerializer.Deserialize<List<CvSectionCreateDto>>(content, options);
-            }
-            catch
-            {
-                // Fallback: try to extract JSON array from the content
-                var start = content.IndexOf('[');
-                var end = content.LastIndexOf(']');
-                if (start >= 0 && end > start)
-                {
-                    var arrayJson = content[start..(end + 1)];
-                    sections = JsonSerializer.Deserialize<List<CvSectionCreateDto>>(arrayJson, options);
-                }
-                else
-                {
-                    return BadRequest(new { message = "Impossible de parser la reponse de l'IA. Reessayez." });
-                }
-            }
-
-            if (sections == null || sections.Count == 0)
-                return BadRequest(new { message = "L'IA n'a genere aucune section. Reessayez." });
-
-            // Validate section types
-            sections = sections.Where(s => ValidTypes.Contains(s.SectionType)).ToList();
-
-            return Ok(sections);
-        }
-        catch (Exception ex)
-        {
-            return StatusCode(500, new { message = "Erreur lors de la generation IA.", detail = ex.Message });
-        }
+        return Ok(sections);
     }
 
-    // ═══ Parse CV File (PDF/DOCX/DOC) via OpenAI ═══
+    // ═══ Analyse d'un fichier CV (PDF/DOCX/DOC) par le modele ═══
 
     [HttpPost("parse-file")]
     public async Task<ActionResult<List<CvSectionCreateDto>>> ParseCvFile(IFormFile file)
@@ -235,101 +243,31 @@ public class CvController : ControllerBase
         if (file.Length > 10 * 1024 * 1024)
             return BadRequest(new { message = "Le fichier ne doit pas depasser 10 Mo." });
 
-        var ext = Path.GetExtension(file.FileName).ToLower();
-        if (ext != ".pdf" && ext != ".docx" && ext != ".doc")
-            return BadRequest(new { message = "Formats acceptes : PDF, DOCX, DOC." });
+        var extraction = ExtractText(file);
+        if (extraction.Error != null)
+            return BadRequest(new { message = extraction.Error });
 
-        var apiKey = _config["OpenAI:ApiKey"];
-        if (string.IsNullOrEmpty(apiKey))
-            return StatusCode(503, new { message = "Cle API OpenAI non configuree." });
+        var prompt = BuildParsePrompt(extraction.Text!);
 
-        // Extract text from file (copy to MemoryStream for seekable access)
-        string extractedText;
-        try
-        {
-            using var memoryStream = new MemoryStream();
-            await file.CopyToAsync(memoryStream);
-            memoryStream.Position = 0;
+        var result = await _ai.ChatAsync(
+            "Tu es un expert RH specialise dans l'analyse et la structuration de CV professionnels. Tu extrais TOUTES les informations d'un CV de maniere exhaustive et fidele. Tu reponds UNIQUEMENT en JSON valide, sans aucun texte autour.",
+            prompt,
+            temperature: 0.2,
+            maxTokens: 6000,
+            cancellationToken: HttpContext.RequestAborted);
 
-            extractedText = ext == ".pdf" ? ExtractTextFromPdf(memoryStream) : ExtractTextFromDocx(memoryStream);
-        }
-        catch (Exception ex)
-        {
-            return BadRequest(new { message = $"Impossible de lire le fichier : {ex.Message}" });
-        }
+        if (!result.Ok)
+            return StatusCode(result.Status, new { message = result.Error });
 
-        if (string.IsNullOrWhiteSpace(extractedText) || extractedText.Length < 50)
-            return BadRequest(new { message = "Le fichier ne contient pas assez de texte exploitable." });
+        var sections = ReadSections(result.Content!);
+        if (sections == null)
+            return BadRequest(new { message = "Reponse du modele illisible. Reessayez." });
 
-        // Truncate if too long (OpenAI token limit)
-        if (extractedText.Length > 12000)
-            extractedText = extractedText[..12000];
+        sections = KeepUsableSections(sections);
+        if (sections.Count == 0)
+            return BadRequest(new { message = "Aucune section extraite du CV. Verifiez le contenu du fichier." });
 
-        // Build prompt for CV parsing
-        var prompt = BuildParsePrompt(extractedText);
-
-        try
-        {
-            var client = _httpClientFactory.CreateClient();
-            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
-
-            var requestBody = new
-            {
-                model = "gpt-4o-mini",
-                messages = new object[]
-                {
-                    new { role = "system", content = "Tu es un expert RH specialise dans l'analyse et la structuration de CV professionnels. Tu extrais TOUTES les informations d'un CV de maniere exhaustive et fidelele. Tu reponds UNIQUEMENT en JSON valide, sans aucun texte autour." },
-                    new { role = "user", content = prompt }
-                },
-                temperature = 0.2,
-                max_tokens = 6000
-            };
-
-            var response = await client.PostAsJsonAsync("https://api.openai.com/v1/chat/completions", requestBody);
-
-            if (!response.IsSuccessStatusCode)
-            {
-                var error = await response.Content.ReadAsStringAsync();
-                return StatusCode(502, new { message = $"Erreur API OpenAI: {response.StatusCode}" });
-            }
-
-            var json = await response.Content.ReadAsStringAsync();
-            using var doc = JsonDocument.Parse(json);
-            var content = doc.RootElement.GetProperty("choices")[0].GetProperty("message").GetProperty("content").GetString();
-
-            if (string.IsNullOrEmpty(content))
-                return StatusCode(502, new { message = "Reponse vide de l'IA." });
-
-            var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
-            List<CvSectionCreateDto>? sections;
-
-            try
-            {
-                var wrapper = JsonSerializer.Deserialize<AiGenerateResponseDto>(content, options);
-                sections = wrapper?.Sections;
-                if (sections == null || sections.Count == 0)
-                    sections = JsonSerializer.Deserialize<List<CvSectionCreateDto>>(content, options);
-            }
-            catch
-            {
-                var start = content.IndexOf('[');
-                var end = content.LastIndexOf(']');
-                if (start >= 0 && end > start)
-                    sections = JsonSerializer.Deserialize<List<CvSectionCreateDto>>(content[start..(end + 1)], options);
-                else
-                    return BadRequest(new { message = "Impossible de parser la reponse de l'IA. Reessayez." });
-            }
-
-            if (sections == null || sections.Count == 0)
-                return BadRequest(new { message = "Aucune section extraite du CV. Verifiez le contenu du fichier." });
-
-            sections = sections.Where(s => ValidTypes.Contains(s.SectionType)).ToList();
-            return Ok(sections);
-        }
-        catch (Exception ex)
-        {
-            return StatusCode(500, new { message = "Erreur lors de l'analyse du CV.", detail = ex.Message });
-        }
+        return Ok(new { sections, truncated = extraction.Truncated });
     }
 
     // ═══ Parse CV -> champs de profil (prefill) ═══
@@ -352,77 +290,83 @@ public class CvController : ControllerBase
         if (file.Length > 10 * 1024 * 1024)
             return BadRequest(new { message = "Le fichier ne doit pas depasser 10 Mo." });
 
-        var ext = Path.GetExtension(file.FileName).ToLower();
-        if (ext != ".pdf" && ext != ".docx" && ext != ".doc")
-            return BadRequest(new { message = "Formats acceptes : PDF, DOCX, DOC." });
-
-        var apiKey = _config["OpenAI:ApiKey"];
-        if (string.IsNullOrEmpty(apiKey))
-            return StatusCode(503, new { message = "Cle API OpenAI non configuree." });
-
-        string extractedText;
-        try
-        {
-            using var memoryStream = new MemoryStream();
-            await file.CopyToAsync(memoryStream);
-            memoryStream.Position = 0;
-            extractedText = ext == ".pdf" ? ExtractTextFromPdf(memoryStream) : ExtractTextFromDocx(memoryStream);
-        }
-        catch (Exception ex)
-        {
-            return BadRequest(new { message = $"Impossible de lire le fichier : {ex.Message}" });
-        }
-
-        if (string.IsNullOrWhiteSpace(extractedText) || extractedText.Length < 50)
-            return BadRequest(new { message = "Le fichier ne contient pas assez de texte exploitable." });
-        if (extractedText.Length > 12000)
-            extractedText = extractedText[..12000];
+        var extraction = ExtractText(file);
+        if (extraction.Error != null)
+            return BadRequest(new { message = extraction.Error });
 
         var prompt = "A partir du CV ci-dessous, renvoie UNIQUEMENT un objet JSON (sans texte autour) avec ces cles : " +
             "\"title\" (intitule de poste actuel ou recherche), \"skills\" (competences cles separees par des virgules), " +
             "\"experienceYears\" (nombre entier d'annees d'experience, ou null), \"education\" (diplome le plus eleve), " +
             "\"city\" (ville), \"bio\" (resume professionnel de 2-3 phrases a la premiere personne). " +
-            "Utilise null pour toute information absente.\n\nCV:\n" + extractedText;
+            "Chaque valeur est une CHAINE de caracteres (jamais une liste), sauf experienceYears qui est un entier. " +
+            "Utilise null pour toute information absente.\n\nCV:\n" + extraction.Text;
+
+        var result = await _ai.ChatAsync(
+            "Tu es un expert RH. Tu extrais des informations de profil depuis un CV et reponds UNIQUEMENT en JSON valide.",
+            prompt,
+            temperature: 0.2,
+            maxTokens: 800,
+            cancellationToken: HttpContext.RequestAborted);
+
+        if (!result.Ok)
+            return StatusCode(result.Status, new { message = result.Error });
+
+        var content = result.Content!;
+        var start = content.IndexOf('{');
+        var end = content.LastIndexOf('}');
+        if (start < 0 || end <= start)
+            return BadRequest(new { message = "Reponse du modele illisible. Reessayez." });
 
         try
         {
-            var client = _httpClientFactory.CreateClient();
-            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
-            var requestBody = new
-            {
-                model = "gpt-4o-mini",
-                messages = new object[]
-                {
-                    new { role = "system", content = "Tu es un expert RH. Tu extrais des informations de profil depuis un CV et reponds UNIQUEMENT en JSON valide." },
-                    new { role = "user", content = prompt }
-                },
-                temperature = 0.2,
-                max_tokens = 800
-            };
-
-            var response = await client.PostAsJsonAsync("https://api.openai.com/v1/chat/completions", requestBody);
-            if (!response.IsSuccessStatusCode)
-                return StatusCode(502, new { message = $"Erreur API OpenAI: {response.StatusCode}" });
-
-            var json = await response.Content.ReadAsStringAsync();
-            using var doc = JsonDocument.Parse(json);
-            var content = doc.RootElement.GetProperty("choices")[0].GetProperty("message").GetProperty("content").GetString();
-            if (string.IsNullOrEmpty(content))
-                return StatusCode(502, new { message = "Reponse vide de l'IA." });
-
-            var start = content.IndexOf('{');
-            var end = content.LastIndexOf('}');
-            if (start < 0 || end <= start)
-                return BadRequest(new { message = "Impossible de parser la reponse de l'IA." });
-
-            var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
-            var draft = JsonSerializer.Deserialize<ProfileDraftDto>(content[start..(end + 1)], options);
+            var draft = JsonSerializer.Deserialize<ProfileDraftDto>(content[start..(end + 1)], FlexibleJson.Options);
             return Ok(draft ?? new ProfileDraftDto());
         }
-        catch (Exception ex)
+        catch (JsonException)
         {
-            return StatusCode(500, new { message = "Erreur lors de l'analyse du profil.", detail = ex.Message });
+            return BadRequest(new { message = "Reponse du modele illisible. Reessayez." });
         }
+    }
+
+    // ═══ Lecture du fichier ═══
+
+    private record TextExtraction(string? Text, string? Error, bool Truncated);
+
+    /// <summary>Longueur de texte transmise au modele. Au-dela, la fin du CV est
+    /// ecartee : l'appelant en est informe plutot que de l'ignorer en silence.</summary>
+    private const int MaxCvTextLength = 12000;
+
+    private static TextExtraction ExtractText(IFormFile file)
+    {
+        var ext = Path.GetExtension(file.FileName).ToLower();
+
+        string text;
+        try
+        {
+            using var memoryStream = new MemoryStream();
+            file.CopyTo(memoryStream);
+            memoryStream.Position = 0;
+            text = ext == ".pdf" ? ExtractTextFromPdf(memoryStream) : ExtractTextFromDocx(memoryStream);
+        }
+        catch (Exception)
+        {
+            // Cas courant : un « .doc » Word 97-2003, que le lecteur OpenXML ne
+            // sait pas ouvrir. Le message doit orienter vers la sortie.
+            var hint = ext == ".doc"
+                ? "Ce fichier .doc est au format Word 97-2003. Enregistrez-le en .docx ou en PDF, puis reessayez."
+                : "Fichier illisible. Verifiez qu'il n'est pas protege par un mot de passe, puis reessayez.";
+            return new TextExtraction(null, hint, false);
+        }
+
+        if (string.IsNullOrWhiteSpace(text) || text.Length < 50)
+        {
+            return new TextExtraction(null,
+                "Aucun texte n'a pu etre lu. S'il s'agit d'un CV scanne (image), exportez-le en PDF texte ou en .docx.",
+                false);
+        }
+
+        var truncated = text.Length > MaxCvTextLength;
+        return new TextExtraction(truncated ? text[..MaxCvTextLength] : text, null, truncated);
     }
 
     // ═══ Text extraction ═══
@@ -436,7 +380,10 @@ public class CvController : ControllerBase
         for (int i = 1; i <= pdfDoc.GetNumberOfPages(); i++)
         {
             var page = pdfDoc.GetPage(i);
-            var strategy = new SimpleTextExtractionStrategy();
+            // Lecture par position et non par ordre d'ecriture dans le fichier :
+            // les CV a colonne laterale (competences a gauche, experiences a
+            // droite) ressortent sinon entrelaces, une ligne sur deux.
+            var strategy = new LocationTextExtractionStrategy();
             var text = PdfTextExtractor.GetTextFromPage(page, strategy);
             sb.AppendLine(text);
         }
