@@ -188,7 +188,7 @@ public class AdminController : ControllerBase
 
         var restantes = await _context.JobOffers.CountAsync();
         await _log.Log("DeleteOffers", "JobOffer", null,
-            $"{supprimees} offre(s) supprimee(s), {restantes} restante(s)",
+            $"{supprimees} offre(s) supprimée(s), {restantes} restante(s)",
             UserId(), UserFullName(), Ip());
 
         return Ok(new { supprimees, restantes, detail });
@@ -267,7 +267,7 @@ public class AdminController : ControllerBase
         job.IsActive = true;
         await _context.SaveChangesAsync();
 
-        await _log.Log("ApproveOffer", "JobOffer", id, $"Offre approuvee: {job.Title}", UserId(), UserFullName(), Ip());
+        await _log.Log("ApproveOffer", "JobOffer", id, $"Offre approuvée : {job.Title}", UserId(), UserFullName(), Ip());
         return Ok(new { job.Id, job.ModerationStatus });
     }
 
@@ -282,7 +282,7 @@ public class AdminController : ControllerBase
         job.ModerationNote = dto.Note;
         await _context.SaveChangesAsync();
 
-        await _log.Log("RejectOffer", "JobOffer", id, $"Offre rejetee: {job.Title} — {dto.Note}", UserId(), UserFullName(), Ip());
+        await _log.Log("RejectOffer", "JobOffer", id, $"Offre rejetée : {job.Title} — {dto.Note}", UserId(), UserFullName(), Ip());
         return Ok(new { job.Id, job.ModerationStatus });
     }
 
@@ -295,7 +295,7 @@ public class AdminController : ControllerBase
         job.IsFeatured = !job.IsFeatured;
         await _context.SaveChangesAsync();
 
-        await _log.Log("ToggleFeature", "JobOffer", id, $"Offre {(job.IsFeatured ? "mise en avant" : "retiree de la une")}: {job.Title}", UserId(), UserFullName(), Ip());
+        await _log.Log("ToggleFeature", "JobOffer", id, $"Offre {(job.IsFeatured ? "mise en avant" : "retirée de la une")} : {job.Title}", UserId(), UserFullName(), Ip());
         return Ok(new { job.Id, job.IsFeatured });
     }
 
@@ -356,7 +356,7 @@ public class AdminController : ControllerBase
             }
         }
 
-        await _log.Log("CreateAnnouncement", "Announcement", ann.Id, $"Annonce creee: {ann.Title}", UserId(), UserFullName(), Ip());
+        await _log.Log("CreateAnnouncement", "Announcement", ann.Id, $"Annonce créée : {ann.Title}", UserId(), UserFullName(), Ip());
         return CreatedAtAction(nameof(GetAnnouncements), new { id = ann.Id }, ann);
     }
 
@@ -592,6 +592,13 @@ public class AdminController : ControllerBase
     //  que la page affichee.
     // ═══════════════════════════════════
 
+    /// <summary>
+    /// Nombre de jours au-dela duquel une candidature sans decision est
+    /// consideree en souffrance. Partage par la facette et par le filtre :
+    /// une tuile qui compte autrement que ce que son clic affiche ment.
+    /// </summary>
+    private const int StaleAfterDays = 30;
+
     private static (int page, int size) Paging(int page, int pageSize)
         => (page < 1 ? 1 : page, pageSize is < 1 or > 100 ? 25 : pageSize);
 
@@ -605,6 +612,7 @@ public class AdminController : ControllerBase
         [FromQuery] string? experience,
         [FromQuery] string? location,
         [FromQuery] bool? remote,
+        [FromQuery] string? source,
         [FromQuery] DateTime? day,
         [FromQuery] string? sort,
         [FromQuery] int page = 1,
@@ -622,6 +630,9 @@ public class AdminController : ControllerBase
         if (!string.IsNullOrWhiteSpace(experience)) query = query.Where(j => j.ExperienceRequired == experience);
         if (!string.IsNullOrWhiteSpace(location)) query = query.Where(j => j.Location.Contains(location));
         if (remote == true) query = query.Where(j => j.IsRemote);
+        // « local » ne se compare pas a ExternalSource : c'est son absence.
+        if (source == "local") query = query.Where(j => j.ExternalSource == null);
+        else if (!string.IsNullOrWhiteSpace(source)) query = query.Where(j => j.ExternalSource == source);
         if (!string.IsNullOrWhiteSpace(status))
         {
             // Une offre sans statut est en attente : le filtre doit la voir.
@@ -645,6 +656,8 @@ public class AdminController : ControllerBase
             Rejected = g.Count(j => j.ModerationStatus == "Rejected"),
             Remote = g.Count(j => j.IsRemote),
             Views = g.Sum(j => j.ViewCount),
+            Local = g.Count(j => j.ExternalSource == null),
+            NoSalary = g.Count(j => j.MinSalary == null && j.MaxSalary == null),
         }).FirstOrDefaultAsync() ?? new OfferFacetsDto();
 
         query = sort switch
@@ -652,6 +665,11 @@ public class AdminController : ControllerBase
             "views" => query.OrderByDescending(j => j.ViewCount),
             "title" => query.OrderBy(j => j.Title),
             "company" => query.OrderBy(j => j.Company).ThenBy(j => j.Title),
+            // Trier par salaire remonte les extremes : c'est ainsi qu'on
+            // reconnait une remuneration mal analysee a l'import.
+            "salary" => query.OrderByDescending(j => j.MinSalary ?? j.MaxSalary),
+            "salary_asc" => query.Where(j => j.MinSalary != null || j.MaxSalary != null)
+                                 .OrderBy(j => j.MinSalary ?? j.MaxSalary),
             _ => query.OrderByDescending(j => j.CreatedAt),
         };
 
@@ -663,6 +681,7 @@ public class AdminController : ControllerBase
                 j.Id, j.Title, j.Company, j.Location, j.Category, j.ContractType,
                 j.IsRemote, j.CreatedAt, j.ViewCount, j.ModerationStatus,
                 j.IsFeatured, j.IsUrgent, j.ExperienceRequired,
+                j.MinSalary, j.MaxSalary, j.SalaryPeriod, j.ExternalSource,
             })
             .ToListAsync();
 
@@ -676,6 +695,7 @@ public class AdminController : ControllerBase
         [FromQuery] int? offerId,
         [FromQuery] string? company,
         [FromQuery] string? source,
+        [FromQuery] bool? stale,
         [FromQuery] DateTime? day,
         [FromQuery] string? sort,
         [FromQuery] int page = 1,
@@ -699,6 +719,13 @@ public class AdminController : ControllerBase
             query = query.Where(a => a.AppliedAt >= from && a.AppliedAt < to);
         }
 
+        // Le delai de courtoisie au-dela duquel un dossier sans decision
+        // devient un candidat abandonne. Trente jours est la limite
+        // habituellement retenue par les chartes de recrutement.
+        var limiteRelance = DateTime.UtcNow.AddDays(-StaleAfterDays);
+        if (stale == true)
+            query = query.Where(a => (a.Status == "Pending" || a.Status == "Reviewed") && a.AppliedAt < limiteRelance);
+
         var facets = await query.GroupBy(_ => 1).Select(g => new ApplicationFacetsDto
         {
             Total = g.Count(),
@@ -706,6 +733,12 @@ public class AdminController : ControllerBase
             Reviewed = g.Count(a => a.Status == "Reviewed"),
             Accepted = g.Count(a => a.Status == "Accepted"),
             Rejected = g.Count(a => a.Status == "Rejected"),
+            Stale = g.Count(a => (a.Status == "Pending" || a.Status == "Reviewed") && a.AppliedAt < limiteRelance),
+            // Moyenne sur les seuls dossiers lus : inclure les autres avec
+            // un delai nul ferait baisser la mesure a mesure que le retard
+            // s'accumule, soit exactement l'inverse de ce qu'elle dit.
+            AvgResponseDays = g.Where(a => a.ReviewedAt != null)
+                               .Average(a => (double?)EF.Functions.DateDiffDay(a.AppliedAt, a.ReviewedAt!.Value)),
         }).FirstOrDefaultAsync() ?? new ApplicationFacetsDto();
 
         query = sort switch
@@ -713,6 +746,9 @@ public class AdminController : ControllerBase
             "candidate" => query.OrderBy(a => a.FullName),
             "company" => query.OrderBy(a => a.JobOffer!.Company),
             "status" => query.OrderBy(a => a.Status),
+            // Les plus anciennes d'abord : l'ordre dans lequel il faudrait
+            // les traiter, et celui que la liste ne donnait pas.
+            "oldest" => query.OrderBy(a => a.AppliedAt),
             _ => query.OrderByDescending(a => a.AppliedAt),
         };
 
@@ -734,6 +770,8 @@ public class AdminController : ControllerBase
         [FromQuery] string? status,
         [FromQuery] string? type,
         [FromQuery] string? company,
+        [FromQuery] bool? upcoming,
+        [FromQuery] bool? overdue,
         [FromQuery] string? sort,
         [FromQuery] int page = 1,
         [FromQuery] int pageSize = 25)
@@ -753,6 +791,15 @@ public class AdminController : ControllerBase
         if (!string.IsNullOrWhiteSpace(company)) query = query.Where(i => i.Application.JobOffer!.Company == company);
 
         var now = DateTime.UtcNow;
+
+        // Un entretien dont la date est passee mais qui reste « propose »
+        // ou « accepte » n'a jamais ete cloture : personne n'a dit s'il a
+        // eu lieu. C'est le seul defaut de cette page sur lequel
+        // l'exploitant peut agir, et rien ne le signalait.
+        if (upcoming == true) query = query.Where(i => i.ProposedAt > now && i.Status != "Cancelled");
+        if (overdue == true)
+            query = query.Where(i => i.ProposedAt < now && (i.Status == "Proposed" || i.Status == "Accepted"));
+
         var facets = await query.GroupBy(_ => 1).Select(g => new InterviewFacetsDto
         {
             Total = g.Count(),
@@ -761,6 +808,7 @@ public class AdminController : ControllerBase
             Completed = g.Count(i => i.Status == "Completed"),
             Cancelled = g.Count(i => i.Status == "Cancelled"),
             Upcoming = g.Count(i => i.ProposedAt > now && i.Status != "Cancelled"),
+            Overdue = g.Count(i => i.ProposedAt < now && (i.Status == "Proposed" || i.Status == "Accepted")),
         }).FirstOrDefaultAsync() ?? new InterviewFacetsDto();
 
         query = sort switch
@@ -768,6 +816,9 @@ public class AdminController : ControllerBase
             "candidate" => query.OrderBy(i => i.Application.FullName),
             "company" => query.OrderBy(i => i.Application.JobOffer!.Company),
             "status" => query.OrderBy(i => i.Status),
+            // Le plus recent d'abord : l'ordre de lecture d'un historique,
+            // quand la question porte sur ce qui vient de se passer.
+            "recent" => query.OrderByDescending(i => i.ProposedAt),
             _ => query.OrderBy(i => i.ProposedAt),
         };
 
@@ -877,7 +928,7 @@ public class AdminController : ControllerBase
 
         await _context.SaveChangesAsync();
         await _log.Log("UpdateApplication", "Application", id,
-            $"Candidature de {a.FullName} modifiee", UserId(), UserFullName(), Ip());
+            $"Candidature de {a.FullName} modifiée", UserId(), UserFullName(), Ip());
         return Ok(new { a.Id, a.Status, a.IsArchived, a.ReviewedAt });
     }
 
@@ -889,7 +940,7 @@ public class AdminController : ControllerBase
         _context.Applications.Remove(a);
         await _context.SaveChangesAsync();
         await _log.Log("DeleteApplication", "Application", id,
-            $"Candidature de {a.FullName} supprimee", UserId(), UserFullName(), Ip());
+            $"Candidature de {a.FullName} supprimée", UserId(), UserFullName(), Ip());
         return NoContent();
     }
 
@@ -928,7 +979,7 @@ public class AdminController : ControllerBase
         if (dto.Notes != null) i.Notes = dto.Notes;
         await _context.SaveChangesAsync();
         await _log.Log("UpdateInterview", "Interview", id,
-            "Entretien modifie", UserId(), UserFullName(), Ip());
+            "Entretien modifié", UserId(), UserFullName(), Ip());
         return Ok(new { i.Id, i.Status });
     }
 
@@ -1044,6 +1095,16 @@ public class AdminController : ControllerBase
             .Take(50)
             .ToListAsync();
 
+        // « Ce compte sert-il encore ? » est la premiere question que pose
+        // une fiche, et rien n'y repondait : AppUser ne porte pas de date
+        // de derniere connexion. Le journal la porte deja — la deduire
+        // evite d'ajouter une colonne et une migration pour une donnee qui
+        // existe.
+        var connexions = _context.ActivityLogs.Where(l => l.UserId == id && l.Action == "Login");
+        var derniereConnexion = await connexions.MaxAsync(l => (DateTime?)l.CreatedAt);
+        var depuis30j = DateTime.UtcNow.AddDays(-30);
+        var connexions30j = await connexions.CountAsync(l => l.CreatedAt >= depuis30j);
+
         return new
         {
             user = new
@@ -1053,6 +1114,8 @@ public class AdminController : ControllerBase
                 user.Skills, user.ExperienceYears, user.Education, user.City,
                 user.LinkedInUrl, user.PortfolioUrl, user.IsSearchable, user.IsActive,
                 user.CreatedAt, user.PhoneNumber, user.EmailConfirmed,
+                lastLoginAt = derniereConnexion,
+                loginsLast30Days = connexions30j,
             },
             applications,
             savedSearches,
@@ -1106,7 +1169,7 @@ public class AdminController : ControllerBase
 
         await _context.SaveChangesAsync();
         await _log.Log("UpdateUser", "User", null,
-            $"Profil de {user.Email} modifie", UserId(), UserFullName(), Ip());
+            $"Profil de {user.Email} modifié", UserId(), UserFullName(), Ip());
 
         return Ok(new { message = "Profil mis a jour" });
     }
@@ -1128,7 +1191,7 @@ public class AdminController : ControllerBase
             return BadRequest(new { message = string.Join(" ", result.Errors.Select(e => e.Description)) });
 
         await _log.Log("ResetPassword", "User", null,
-            $"Mot de passe de {user.Email} reinitialise", UserId(), UserFullName(), Ip());
+            $"Mot de passe de {user.Email} réinitialisé", UserId(), UserFullName(), Ip());
 
         return Ok(new { message = "Mot de passe reinitialise" });
     }
@@ -1167,7 +1230,7 @@ public class AdminController : ControllerBase
         }
         await _context.SaveChangesAsync();
 
-        await _log.Log("UpdateSettings", "PlatformSetting", null, $"Parametres mis a jour ({settings.Count} modif.)", UserId(), UserFullName(), Ip());
+        await _log.Log("UpdateSettings", "PlatformSetting", null, $"Paramètres mis à jour ({settings.Count} modification(s))", UserId(), UserFullName(), Ip());
         return NoContent();
     }
 
@@ -1259,6 +1322,16 @@ public class OfferFacetsDto
     public int Rejected { get; set; }
     public int Remote { get; set; }
     public int Views { get; set; }
+
+    /// <summary>
+    /// Offres deposees sur la plateforme, par opposition aux offres importees
+    /// chez un partenaire. Le catalogue est massivement importe : c'est le
+    /// nombre qui dit ce que la plateforme produit vraiment.
+    /// </summary>
+    public int Local { get; set; }
+
+    /// <summary>Offres dont la remuneration reste inconnue apres analyse.</summary>
+    public int NoSalary { get; set; }
 }
 
 public class ApplicationFacetsDto
@@ -1268,10 +1341,23 @@ public class ApplicationFacetsDto
     public int Reviewed { get; set; }
     public int Accepted { get; set; }
     public int Rejected { get; set; }
+
+    /// <summary>
+    /// Dossiers sans decision passe le delai de courtoisie. Un candidat
+    /// laisse sans reponse ne revient pas : c'est la seule mesure de cette
+    /// page sur laquelle l'exploitant peut agir.
+    /// </summary>
+    public int Stale { get; set; }
+
+    /// <summary>Delai moyen, en jours, entre le depot et la premiere lecture.</summary>
+    public double? AvgResponseDays { get; set; }
 }
 
 public class InterviewFacetsDto
 {
+    /// <summary>Entretiens passes sans issue enregistree.</summary>
+    public int Overdue { get; set; }
+
     public int Total { get; set; }
     public int Proposed { get; set; }
     public int Accepted { get; set; }

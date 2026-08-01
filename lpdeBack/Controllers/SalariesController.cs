@@ -16,11 +16,19 @@ public class SalariesController : ControllerBase
 
     private string? GetUserId() => User.FindFirstValue(ClaimTypes.NameIdentifier);
 
-    // Salaire annuel estimé d'une offre : milieu de fourchette, sinon la valeur disponible.
+    /// <summary>
+    /// Salaire annuel estimé d'une offre : milieu de fourchette, sinon le plancher.
+    ///
+    /// Un plafond seul ne compte pas. « Annuel de 0 à 200 000 € » veut dire
+    /// que l'employeur a laissé le minimum vide : c'est une borne haute, pas
+    /// une rémunération observée. Comptée comme telle, elle plaçait un poseur
+    /// de panneaux photovoltaïques en tête du classement des salaires, juste
+    /// devant les anesthésistes.
+    /// </summary>
     private static int? AnnualOf(JobOffer j)
     {
         if (j.MinSalary.HasValue && j.MaxSalary.HasValue) return (j.MinSalary.Value + j.MaxSalary.Value) / 2;
-        return j.MinSalary ?? j.MaxSalary;
+        return j.MinSalary;
     }
 
     /// <summary>Meilleurs salaires par métier (optionnellement filtrés par secteur / recherche).</summary>
@@ -29,8 +37,11 @@ public class SalariesController : ControllerBase
     {
         // Regroupement effectué côté SQL (agrégats) : on ne matérialise que le top 60,
         // pas les ~150k offres salariées.
+        // Le plancher est exigé, pas seulement « une borne » : une offre qui
+        // n'annonce qu'un plafond (« jusqu'à 200 000 € ») ne dit rien de ce
+        // qu'elle paie, et la compter tirait le classement vers le haut.
         var query = _context.JobOffers
-            .Where(j => j.IsActive && j.ModerationStatus == "Approved" && (j.MinSalary != null || j.MaxSalary != null));
+            .Where(j => j.IsActive && j.ModerationStatus == "Approved" && j.MinSalary != null);
         if (!string.IsNullOrWhiteSpace(sector))
             query = query.Where(j => j.Category == sector);
         if (!string.IsNullOrWhiteSpace(q))

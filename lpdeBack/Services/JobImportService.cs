@@ -807,16 +807,62 @@ public class JobImportService
     // Ex : "Mensuel de 1800.0 Euros à 2200.0 Euros sur 12.0 mois" -> (21600, 26400)
     //      "Annuel de 30000.0 Euros sur 12.0 mois"               -> (30000, 30000)
     //      "Horaire de 11.65 Euros à 13.0 Euros"                 -> (~21203, ~23660)
+    //
+    // ── Ce qui produisait des salaires faux ──
+    //
+    // Quatre défauts se cumulaient, tous visibles sur la page publique des
+    // salaires, qui classe les métiers par rémunération décroissante et
+    // mettait donc les erreurs en tête de liste :
+    //
+    // 1. « Cachet de 120.0 Euros » n'a pas de période. Le repli sur l'ordre
+    //    de grandeur lisait 120 comme un taux horaire : 120 × 35 × 52 =
+    //    218 400 €. Un cachet d'artiste devenait le deuxième salaire de
+    //    France. Un cachet, une prime ou un forfait ne se convertissent pas
+    //    en salaire annuel : ils ne sont pas périodiques.
+    //
+    // 2. La plage mensuelle plausible montait à 30 000 €, soit 360 000 €
+    //    par an. « Mensuel de 19050 Euros » pour un conducteur de ligne —
+    //    une coquille de France Travail pour 1 905 € — passait donc le
+    //    filtre et ressortait à 228 600 €. Le plafond descend à 15 000 €.
+    //
+    // 3. « Annuel de 0.0 Euros à 200000.0 Euros » : le zéro était écarté
+    //    comme montant nul, et l'unique valeur restante servait de plancher
+    //    ET de plafond. Une fourchette ouverte devenait un salaire ferme de
+    //    200 000 €. Un plancher à zéro veut dire « non précisé » : le
+    //    plancher reste nul.
+    //
+    // 4. « Annuel de 200000 à 500000 Euros » : 500 000 dépassait le plafond
+    //    et était écarté, laissant 200 000 en plancher et en plafond. Écarter
+    //    un montant ne doit pas resserrer la fourchette sur ce qui reste :
+    //    le plafond devient inconnu, pas égal au plancher.
     public static (int? Min, int? Max) ParseFtSalary(string? libelle)
     {
         if (string.IsNullOrWhiteSpace(libelle)) return (null, null);
         var l = libelle.ToLowerInvariant();
 
+        bool hasAnnuel = l.Contains("annuel");
+        bool hasMensuel = l.Contains("mensuel");
+        bool hasHoraire = l.Contains("horaire");
+
+        // (1) Rémunérations non périodiques : sans période explicite, on ne
+        // sait pas sur combien de fois le montant se répète — donc on ne
+        // l'annualise pas.
+        if (!hasAnnuel && !hasMensuel && !hasHoraire
+            && Regex.IsMatch(l, @"\b(cachet|forfait|prime|commission|indemnit)"))
+            return (null, null);
+
         // Montants suivis de "euro(s)" ou "€" (ignore "12 mois", "35 h", etc.).
-        var amounts = Regex.Matches(l, @"(\d+(?:[.,]\d+)?)\s*(?:euros?|€)")
+        // Les zéros sont conservés ici : un « de 0 à X » n'est pas un montant
+        // nul, c'est une borne basse non précisée, et le distinguer d'une
+        // absence de borne change le résultat (voir 3).
+        var raw = Regex.Matches(l, @"(\d+(?:[.,]\d+)?)\s*(?:euros?|€)")
             .Select(mt => ParseNum(mt.Groups[1].Value))
-            .Where(d => d is > 0).Select(d => d!.Value)
+            .Where(d => d.HasValue).Select(d => d!.Value)
             .ToList();
+        if (raw.Count == 0) return (null, null);
+
+        bool floorDeclaredZero = raw.Count > 1 && raw[0] == 0;
+        var amounts = raw.Where(d => d > 0).ToList();
         if (amounts.Count == 0) return (null, null);
 
         // Nombre de mois de versement (13e/14e mois éventuel), défaut 12.
@@ -825,19 +871,20 @@ public class JobImportService
         if (mm.Success && ParseNum(mm.Groups[1].Value) is double mv && mv is >= 12 and <= 16) months = mv;
 
         // Selon la période, seuls les montants dans une plage plausible sont retenus :
-        // certains libellés FT « horaire » contiennent un montant annexe aberrant.
-        // Plages plausibles (les données FT contiennent parfois des montants aberrants).
+        // certains libellés FT contiennent un montant annexe aberrant.
         double factor, lo, hi;
-        if (l.Contains("annuel")) { factor = 1; lo = 8_000; hi = 250_000; }
-        else if (l.Contains("mensuel")) { factor = months; lo = 400; hi = 30_000; }
-        else if (l.Contains("horaire")) { factor = 35 * 52; lo = 3; hi = 200; } // 35 h/sem légales
+        if (hasAnnuel) { factor = 1; lo = 8_000; hi = 250_000; }
+        // (2) 15 000 €/mois = 180 000 €/an : au-delà, un libellé « mensuel »
+        // est une coquille bien plus souvent qu'une rémunération réelle.
+        else if (hasMensuel) { factor = months; lo = 400; hi = 15_000; }
+        else if (hasHoraire) { factor = 35 * 52; lo = 3; hi = 100; } // 35 h/sem légales
         else
         {
             // Période absente : on déduit de l'ordre de grandeur du plus grand montant.
             var big = amounts.Max();
             if (big >= 10_000) { factor = 1; lo = 8_000; hi = 250_000; }
-            else if (big >= 500) { factor = months; lo = 400; hi = 30_000; }
-            else { factor = 35 * 52; lo = 3; hi = 200; }
+            else if (big >= 500) { factor = months; lo = 400; hi = 15_000; }
+            else { factor = 35 * 52; lo = 3; hi = 100; }
         }
 
         var kept = amounts.Where(a => a >= lo && a <= hi).ToList();
@@ -845,6 +892,17 @@ public class JobImportService
 
         int aMin = (int)Math.Round(kept.Min() * factor);
         int aMax = (int)Math.Round(kept.Max() * factor);
+
+        // (4) Un montant écarté par le haut ne doit pas faire retomber le
+        // plafond sur le plancher : la borne haute devient inconnue, et
+        // l'offre s'affiche « à partir de ».
+        bool droppedAbove = amounts.Any(a => a > hi);
+        if (droppedAbove && kept.Count < amounts.Count)
+            return (aMin >= 1_000 ? aMin : (int?)null, null);
+
+        // (3) Plancher annoncé à zéro : la borne basse reste inconnue.
+        if (floorDeclaredZero) return (null, aMax is >= 1_000 and <= 250_000 ? aMax : (int?)null);
+
         if (aMax < 1000 || aMax > 250_000) return (null, null); // garde-fou plausibilité (plafond 250k)
         return (aMin, aMax);
     }
@@ -891,7 +949,11 @@ public class JobImportService
             foreach (var j in batch)
             {
                 var (min, max) = ParseFtSalary(j.Salary);
-                if (min.HasValue) { j.MinSalary = min; j.MaxSalary = max; updated++; }
+                // Une borne seule est un résultat valide : « à partir de X »
+                // (plafond écarté) comme « jusqu'à X » (plancher non précisé).
+                // Ne tester que `min` laissait en base l'ancienne valeur fausse
+                // dans le second cas.
+                if (min.HasValue || max.HasValue) { j.MinSalary = min; j.MaxSalary = max; updated++; }
                 else if (force) { j.MinSalary = null; j.MaxSalary = null; } // efface une ancienne valeur erronée
             }
             await _context.SaveChangesAsync(ct);
