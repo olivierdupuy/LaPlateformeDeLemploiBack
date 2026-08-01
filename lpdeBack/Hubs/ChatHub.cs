@@ -15,13 +15,20 @@ public class ChatHub : Hub
         var userId = Context.User?.FindFirst(ClaimTypes.NameIdentifier)?.Value;
         if (userId != null)
         {
+            // Une personne peut ouvrir plusieurs onglets : c'est la
+            // premiere connexion qui la fait arriver, pas chacune d'elles.
+            // Annoncer les suivantes obligeait chaque client a deviner le
+            // doublon, et celui qui ne le faisait pas voyait son compteur
+            // deriver a la hausse sans jamais redescendre.
+            bool premiere;
             lock (_userConnections)
             {
-                if (!_userConnections.ContainsKey(userId))
-                    _userConnections[userId] = new HashSet<string>();
-                _userConnections[userId].Add(Context.ConnectionId);
+                if (!_userConnections.TryGetValue(userId, out var connexions))
+                    _userConnections[userId] = connexions = new HashSet<string>();
+                premiere = connexions.Count == 0;
+                connexions.Add(Context.ConnectionId);
             }
-            await Clients.Others.SendAsync("UserOnline", userId);
+            if (premiere) await Clients.Others.SendAsync("UserOnline", userId);
         }
         await base.OnConnectedAsync();
     }
