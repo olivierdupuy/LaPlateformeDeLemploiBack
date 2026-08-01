@@ -53,6 +53,91 @@ public class BrevoService
     public record Resultat(bool Parti, string? Identifiant, string? Erreur, bool DefinitiF = false);
 
     /// <summary>
+    /// Les en-tetes de tout appel a Brevo.
+    ///
+    /// L'agent utilisateur n'est pas une politesse : Brevo est derriere
+    /// Cloudflare, qui refuse par un 403 les clients sans agent reconnu —
+    /// avec un message parlant de « browser signature » ou l'on cherche en
+    /// vain une erreur d'authentification.
+    /// </summary>
+    private void Entetes(HttpRequestMessage r)
+    {
+        r.Headers.Add("api-key", _cle);
+        r.Headers.Add("accept", "application/json");
+        r.Headers.Add("User-Agent", "LaPlateformeDeLemploi/1.0 (+https://www.laplateformedelemploi.com)");
+    }
+
+    /// <summary>Ce que Brevo dit de notre compte, avant qu'on lui confie une campagne.</summary>
+    public record Diagnostic(bool Joignable, string? Compte, int? CreditsRestants,
+                             bool ExpediteurValide, List<string> ExpediteursActifs, string? Erreur);
+
+    /// <summary>
+    /// Interroge Brevo sur deux points qui font echouer une campagne
+    /// entiere, et qu'on ne decouvre autrement qu'apres coup, dans les
+    /// journaux :
+    ///
+    ///   - l'expediteur est-il valide chez eux ? Brevo refuse d'expedier au
+    ///     nom d'une adresse qu'on n'a pas prouve posseder, et refuse alors
+    ///     chaque message un par un ;
+    ///   - reste-t-il assez de credits ? L'offre gratuite plafonne a trois
+    ///     cents envois par jour, et une campagne plus large s'arrete au
+    ///     milieu sans que personne ne l'ait demande.
+    /// </summary>
+    public async Task<Diagnostic> Interroger(CancellationToken ct = default)
+    {
+        if (!EstConfigure)
+            return new Diagnostic(false, null, null, false, new(), "Aucune cle Brevo n'est configuree.");
+
+        try
+        {
+            var client = _http.CreateClient();
+            client.Timeout = TimeSpan.FromSeconds(20);
+
+            using var rc = new HttpRequestMessage(HttpMethod.Get, $"{Racine}/account");
+            Entetes(rc);
+            var compte = await client.SendAsync(rc, ct);
+            if (!compte.IsSuccessStatusCode)
+                return new Diagnostic(false, null, null, false, new(),
+                    compte.StatusCode == System.Net.HttpStatusCode.Unauthorized
+                        ? "Brevo a refuse la cle d'API."
+                        : $"Brevo a repondu {(int)compte.StatusCode}.");
+
+            using var dc = JsonDocument.Parse(await compte.Content.ReadAsStringAsync(ct));
+            var nom = dc.RootElement.TryGetProperty("companyName", out var n) ? n.GetString() : null;
+            int? credits = null;
+            if (dc.RootElement.TryGetProperty("plan", out var plans) && plans.ValueKind == JsonValueKind.Array)
+                foreach (var p in plans.EnumerateArray())
+                    if (p.TryGetProperty("credits", out var c) && c.ValueKind == JsonValueKind.Number)
+                        credits = c.GetInt32();
+
+            using var rs = new HttpRequestMessage(HttpMethod.Get, $"{Racine}/senders");
+            Entetes(rs);
+            var envois = await client.SendAsync(rs, ct);
+            var actifs = new List<string>();
+            if (envois.IsSuccessStatusCode)
+            {
+                using var ds = JsonDocument.Parse(await envois.Content.ReadAsStringAsync(ct));
+                if (ds.RootElement.TryGetProperty("senders", out var liste) && liste.ValueKind == JsonValueKind.Array)
+                    foreach (var e in liste.EnumerateArray())
+                        if (e.TryGetProperty("active", out var a) && a.GetBoolean()
+                            && e.TryGetProperty("email", out var em))
+                            actifs.Add(em.GetString() ?? "");
+            }
+
+            return new Diagnostic(true, nom, credits,
+                                  actifs.Contains(_expediteur, StringComparer.OrdinalIgnoreCase),
+                                  actifs, null);
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning(ex, "Brevo injoignable pour le diagnostic");
+            return new Diagnostic(false, null, null, false, new(), "Brevo est injoignable.");
+        }
+    }
+
+    public string Expediteur => _expediteur;
+
+    /// <summary>
     /// Expedie un message a une personne.
     ///
     /// Un envoi par destinataire, et non un lot : Brevo accepte des lots de
@@ -107,8 +192,7 @@ public class BrevoService
             client.Timeout = TimeSpan.FromSeconds(30);
 
             using var requete = new HttpRequestMessage(HttpMethod.Post, $"{Racine}/smtp/email");
-            requete.Headers.Add("api-key", _cle);
-            requete.Headers.Add("accept", "application/json");
+            Entetes(requete);
             requete.Content = new StringContent(JsonSerializer.Serialize(corps), Encoding.UTF8, "application/json");
 
             var reponse = await client.SendAsync(requete, ct);

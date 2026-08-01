@@ -41,6 +41,7 @@ jobs:
           OVH_APPLICATION_SECRET: ${{ secrets.OVH_APPLICATION_SECRET }}
           OVH_CONSUMER_KEY: ${{ secrets.OVH_CONSUMER_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          BREVO_API_KEY: ${{ secrets.BREVO_API_KEY }}
         run: |
           $appSettings = Get-Content "publish/appsettings.json" | ConvertFrom-Json
           # La cle de signature JWT ne doit jamais venir du depot : quiconque la lit
@@ -96,6 +97,17 @@ jobs:
           # Sans ces trois valeurs, le SMS n'est simplement pas propose aux
           # membres : l'application d'authentification reste offerte, et
           # c'est de toute facon la methode la plus sure.
+          # ── Lettre d'information ──
+          # Sans cle, les abonnements et les desinscriptions continuent de
+          # fonctionner : seules les campagnes restent en attente, sans etre
+          # perdues. Une campagne redigee puis effacee faute de configuration
+          # serait a reecrire entierement.
+          if ($appSettings.Brevo) {
+            $appSettings.Brevo.ApiKey = $env:BREVO_API_KEY
+            if ([string]::IsNullOrWhiteSpace($env:BREVO_API_KEY)) {
+              Write-Warning "Secret BREVO_API_KEY absent : les campagnes de la lettre d'information resteront en attente."
+            }
+          }
           if ($appSettings.Ovh) {
             $appSettings.Ovh.ApplicationKey = "${{ secrets.OVH_APPLICATION_KEY }}"
             $appSettings.Ovh.ApplicationSecret = $env:OVH_APPLICATION_SECRET

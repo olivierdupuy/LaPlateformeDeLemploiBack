@@ -389,6 +389,18 @@ public class AdminNewsletterController : ControllerBase
             return StatusCode(StatusCodes.Status501NotImplemented,
                 new { message = "Aucune cle Brevo n'est configuree : les campagnes ne peuvent pas partir." });
 
+        // Verifier avant de partir plutot que de constater apres : une
+        // campagne lancee vers un expediteur non valide echoue destinataire
+        // par destinataire, et il faut lire les journaux pour comprendre.
+        var diag = await _brevo.Interroger(ct);
+        if (diag.Joignable && !diag.ExpediteurValide)
+            return BadRequest(new
+            {
+                message = $"L'adresse « {_brevo.Expediteur} » n'est pas validee chez Brevo : " +
+                          "tous les envois seraient refuses. Ajoutez-la dans « Expediteurs & domaines » " +
+                          "avant de lancer la campagne.",
+            });
+
         var abonnes = await _lettre.Destinataires(c).Select(s => new { s.Id, s.Email }).ToListAsync(ct);
         if (abonnes.Count == 0)
             return BadRequest(new { message = "Aucun abonne ne correspond a ce ciblage." });
@@ -403,13 +415,21 @@ public class AdminNewsletterController : ControllerBase
         c.Status = "Sending";
         await _context.SaveChangesAsync(ct);
 
+        // Le quota ne bloque pas : ce qui passe part, le reste attend le
+        // lendemain et sera repris. Mais on le dit, sinon la campagne
+        // semble s'arreter sans raison a trois cents messages.
+        var alerte = diag.CreditsRestants is { } credits && credits < abonnes.Count
+            ? $" Attention : il ne reste que {credits} credit(s) chez Brevo. Les {abonnes.Count - credits} " +
+              "derniers messages attendront le renouvellement du quota."
+            : "";
+
         await _log.Log("NewsletterEnvoi", "Newsletter", c.Id,
             $"Campagne « {c.Subject} » lancee vers {abonnes.Count} destinataire(s)",
             UserId(), NomComplet(), SessionService.Ip(HttpContext));
 
         return Ok(new
         {
-            message = $"Envoi lance vers {abonnes.Count} destinataire(s). Il se poursuit en arriere-plan : vous pouvez quitter cette page.",
+            message = $"Envoi lance vers {abonnes.Count} destinataire(s). Il se poursuit en arriere-plan : vous pouvez quitter cette page." + alerte,
             destinataires = abonnes.Count,
         });
     }
@@ -445,16 +465,57 @@ public class AdminNewsletterController : ControllerBase
     //  3. ETAT DU SERVICE
     // ═══════════════════════════════════════════
 
+    /// <summary>
+    /// L'etat du service, interroge chez Brevo et non devine.
+    ///
+    /// Deux pannes ne se voient autrement qu'apres coup, dans les journaux,
+    /// une fois la campagne partie et perdue : un expediteur que Brevo n'a
+    /// pas valide, et un quota epuise. Les deux se lisent d'un appel.
+    /// </summary>
     [HttpGet("etat")]
-    public ActionResult<object> Etat() => Ok(new
+    public async Task<ActionResult<object>> Etat(CancellationToken ct)
     {
-        configure = _brevo.EstConfigure,
-        etat = _brevo.Etat,
-        consequence = _brevo.EstConfigure
-            ? "Les campagnes partent normalement."
-            : "Aucune campagne ne peut partir. Les abonnements et les desinscriptions continuent de fonctionner : seule l'expedition est a l'arret.",
-        champs = NewsletterService.Champs.Select(c => new { cle = c.Cle, description = c.Description }),
-    });
+        var d = await _brevo.Interroger(ct);
+        var abonnes = await _context.NewsletterSubscribers
+            .CountAsync(s => s.Status == "Confirmed" && s.UnsubscribedAt == null, ct);
+
+        var avertissements = new List<string>();
+        if (d.Joignable && !d.ExpediteurValide)
+            avertissements.Add(
+                $"L'adresse « {_brevo.Expediteur} » n'est pas un expediteur valide chez Brevo : " +
+                "chaque envoi sera refuse. Ajoutez-la dans « Expediteurs & domaines » et confirmez " +
+                "le courriel de validation." +
+                (d.ExpediteursActifs.Count > 0
+                    ? $" Adresses actuellement valides : {string.Join(", ", d.ExpediteursActifs)}."
+                    : ""));
+
+        if (d.CreditsRestants is { } credits && credits < abonnes)
+            avertissements.Add(
+                $"Il reste {credits} credit(s) chez Brevo pour {abonnes} abonne(s) : une campagne " +
+                "vers tout le monde s'arreterait en chemin. L'offre gratuite plafonne a trois cents " +
+                "envois par jour — ciblez plus etroitement, ou etalez sur plusieurs jours.");
+
+        return Ok(new
+        {
+            configure = _brevo.EstConfigure,
+            etat = _brevo.Etat,
+            joignable = d.Joignable,
+            compte = d.Compte,
+            creditsRestants = d.CreditsRestants,
+            expediteur = _brevo.Expediteur,
+            expediteurValide = d.ExpediteurValide,
+            expediteursActifs = d.ExpediteursActifs,
+            abonnes,
+            avertissements,
+            erreur = d.Erreur,
+            consequence = !_brevo.EstConfigure
+                ? "Aucune campagne ne peut partir. Les abonnements et les desinscriptions continuent de fonctionner : seule l'expedition est a l'arret."
+                : avertissements.Count == 0
+                    ? "Les campagnes partent normalement."
+                    : "Les campagnes ne partiront pas correctement en l'etat.",
+            champs = NewsletterService.Champs.Select(c => new { cle = c.Cle, description = c.Description }),
+        });
+    }
 }
 
 public class CampagneDto
