@@ -13,7 +13,7 @@ public class RegisterDto
     [Required, EmailAddress]
     public string Email { get; set; } = string.Empty;
 
-    [Required, MinLength(6)]
+    [Required, MinLength(8)]
     public string Password { get; set; } = string.Empty;
 
     [MaxLength(50)]
@@ -82,7 +82,7 @@ public class ChangePasswordDto
     [Required]
     public string CurrentPassword { get; set; } = string.Empty;
 
-    [Required, MinLength(6)]
+    [Required, MinLength(8)]
     public string NewPassword { get; set; } = string.Empty;
 }
 
@@ -103,6 +103,15 @@ public class AuthResponseDto
 
     /// <summary>Le jeton de defi, valable cinq minutes, sans aucun autre pouvoir.</summary>
     public string? ChallengeToken { get; set; }
+
+    /// <summary>« Totp » ou « Sms » : de quoi savoir quoi demander, et ou chercher le code.</summary>
+    public string? TwoFactorMethod { get; set; }
+
+    /// <summary>Le numero masque, quand le code part par SMS : « +33 6 •• •• •• 78 ».</summary>
+    public string? TwoFactorTarget { get; set; }
+
+    /// <summary>Ce qui vient de se passer — envoi reussi, ou raison de son echec.</summary>
+    public string? TwoFactorMessage { get; set; }
 }
 
 public class UserDto
@@ -162,6 +171,11 @@ public class DefiDeuxFacteursDto
 
     /// <summary>Le code de l'application, ou l'un des codes de secours.</summary>
     public string Code { get; set; } = string.Empty;
+}
+
+public class RenvoiDto
+{
+    public string ChallengeToken { get; set; } = string.Empty;
 }
 
 public class LinkedInDto

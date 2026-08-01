@@ -1179,6 +1179,8 @@ public class AdminController : ControllerBase
             securite = new
             {
                 deuxFacteurs = user.TwoFactorEnabled,
+                methode = user.TwoFactorEnabled ? (user.TwoFactorMethod ?? "Totp") : null,
+                telephone = OvhSmsService.Masquer(user.PhoneNumber),
                 deuxFacteursDepuis = user.TwoFactorEnabledAt,
                 deuxFacteursObligatoire = user.Role == "Admin",
                 emailConfirme = user.EmailConfirmed,
@@ -1327,6 +1329,7 @@ public class AdminController : ControllerBase
         await _userManager.SetTwoFactorEnabledAsync(user, false);
         await _userManager.ResetAuthenticatorKeyAsync(user);
         user.TwoFactorEnabledAt = null;
+        user.TwoFactorMethod = null;
         await _userManager.UpdateAsync(user);
 
         var mail = HttpContext.RequestServices.GetRequiredService<IEmailSender>();
@@ -1372,6 +1375,21 @@ public class AdminController : ControllerBase
             consequence = mail.EstConfigure
                 ? "Les mots de passe oubliés, les confirmations d'adresse et les alertes de connexion partent normalement."
                 : "Aucun message ne part. « Mot de passe oublié » n'aboutit pas, les adresses ne se confirment pas, et les alertes de connexion sont écrites dans le journal du serveur au lieu d'être envoyées.",
+        });
+
+    /// <summary>
+    /// Ce que la plateforme sait de son compte SMS. Aucun secret n'en sort :
+    /// le point d'entree et le nom du compte suffisent a diagnostiquer.
+    /// </summary>
+    [HttpGet("sms/etat")]
+    public ActionResult<object> EtatSms([FromServices] OvhSmsService sms)
+        => Ok(new
+        {
+            configure = sms.EstConfigure,
+            etat = sms.Etat,
+            consequence = sms.EstConfigure
+                ? "Le second facteur par SMS est proposé aux membres, et les codes partent."
+                : "Le second facteur par SMS n'est pas proposé : seule l'application d'authentification l'est. Les identifiants OVH manquent.",
         });
 
     /// <summary>Envoie un message de controle a l'adresse demandee.</summary>

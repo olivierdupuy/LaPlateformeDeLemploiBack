@@ -39,6 +39,7 @@ public class SecurityController : ControllerBase
     private readonly IEmailSender _mail;
     private readonly ActivityLogService _log;
     private readonly IConfiguration _config;
+    private readonly DeuxFacteursSms _sms;
 
     public SecurityController(
         UserManager<AppUser> userManager,
@@ -46,7 +47,8 @@ public class SecurityController : ControllerBase
         SessionService sessions,
         IEmailSender mail,
         ActivityLogService log,
-        IConfiguration config)
+        IConfiguration config,
+        DeuxFacteursSms sms)
     {
         _userManager = userManager;
         _context = context;
@@ -54,6 +56,7 @@ public class SecurityController : ControllerBase
         _mail = mail;
         _log = log;
         _config = config;
+        _sms = sms;
     }
 
     private string UserId => User.FindFirstValue(ClaimTypes.NameIdentifier)!;
@@ -87,6 +90,15 @@ public class SecurityController : ControllerBase
             role = user.Role,
 
             deuxFacteurs,
+            // « Active » ne suffit plus : il faut savoir par quoi. Une page
+            // qui ne le dit pas laisse croire qu'on a une application alors
+            // qu'on recevra un SMS, et l'on cherche un code qui n'arrive pas.
+            methode = deuxFacteurs ? (user.TwoFactorMethod ?? "Totp") : null,
+            telephone = OvhSmsService.Masquer(user.PhoneNumber),
+            telephoneConfirme = user.PhoneNumberConfirmed,
+            // Sans identifiants OVH, proposer le SMS serait proposer une
+            // porte qui ne s'ouvre pas.
+            smsDisponible = _sms.Disponible,
             deuxFacteursDepuis = user.TwoFactorEnabledAt,
             codesDeSecoursRestants = deuxFacteurs ? await _userManager.CountRecoveryCodesAsync(user) : 0,
 
@@ -171,13 +183,14 @@ public class SecurityController : ControllerBase
 
         await _userManager.SetTwoFactorEnabledAsync(user, true);
         user.TwoFactorEnabledAt = DateTime.UtcNow;
+        user.TwoFactorMethod = "Totp";
         await _userManager.UpdateAsync(user);
 
         var codes = (await _userManager.GenerateNewTwoFactorRecoveryCodesAsync(user, NombreCodesDeSecours))?.ToList()
                     ?? new List<string>();
 
         await _mail.Envoyer(ModelesCourriel.DoubleAuthentification(user.Email!, user.FirstName, true, LienSecurite));
-        await _log.Log("2faActivee", "User", null, "Double authentification activee", user.Id,
+        await _log.Log("2faActivee", "User", null, "Double authentification activee (application)", user.Id,
                      $"{user.FirstName} {user.LastName}", SessionService.Ip(HttpContext));
 
         return Ok(new
@@ -214,6 +227,7 @@ public class SecurityController : ControllerBase
         var bon = await _userManager.VerifyTwoFactorTokenAsync(
                       user, _userManager.Options.Tokens.AuthenticatorTokenProvider,
                       SessionService.CodeApplication(dto.Code))
+                  || await _sms.Verifier(user, dto.Code)
                   || (await _userManager.RedeemTwoFactorRecoveryCodeAsync(
                       user, SessionService.CodeDeSecours(dto.Code))).Succeeded;
 
@@ -223,6 +237,7 @@ public class SecurityController : ControllerBase
         await _userManager.SetTwoFactorEnabledAsync(user, false);
         await _userManager.ResetAuthenticatorKeyAsync(user);
         user.TwoFactorEnabledAt = null;
+        user.TwoFactorMethod = null;
         await _userManager.UpdateAsync(user);
 
         await _mail.Envoyer(ModelesCourriel.DoubleAuthentification(user.Email!, user.FirstName, false, LienSecurite));
@@ -261,6 +276,79 @@ public class SecurityController : ControllerBase
                      $"{user.FirstName} {user.LastName}", SessionService.Ip(HttpContext));
 
         return Ok(new { codesDeSecours = codes, token = await _sessions.Rafraichir(user, JtiCourant) });
+    }
+
+    // ═══════════════════════════════════════════
+    //  2 bis. SECOND FACTEUR PAR SMS
+    //
+    //  Le SMS est le plus faible des trois facteurs : un echange de carte
+    //  SIM chez l'operateur suffit a le detourner, ce qui n'est vrai ni de
+    //  l'application ni des codes de secours. Il reste offert parce qu'il
+    //  n'exige rien a installer — mais la page le dit, plutot que de
+    //  presenter trois portes de meme apparence.
+    // ═══════════════════════════════════════════
+
+    /// <summary>
+    /// Envoie un code au numero donne, pour le verifier avant qu'il ne
+    /// serve de second facteur. Activer sur un numero non verifie
+    /// enfermerait dehors quiconque s'est trompe d'un chiffre.
+    /// </summary>
+    [HttpPost("2fa/sms/envoyer")]
+    public async Task<ActionResult<object>> EnvoyerCodeSms([FromBody] TelephoneDto dto)
+    {
+        var user = await Moi();
+        if (user == null) return NotFound();
+
+        if (await _userManager.GetTwoFactorEnabledAsync(user))
+            return Conflict(new { message = "La double authentification est déjà active sur ce compte." });
+
+        var numero = OvhSmsService.Normaliser(dto.Telephone);
+        if (numero == null)
+            return BadRequest(new { message = "Ce numéro ne ressemble à rien de valide. Exemple : 06 12 34 56 78." });
+
+        var r = await _sms.Envoyer(user, numero);
+        if (!r.Parti)
+            return BadRequest(new { message = r.Message, secondesAAttendre = r.SecondesAAttendre });
+
+        return Ok(new { message = r.Message, telephone = OvhSmsService.Masquer(numero) });
+    }
+
+    /// <summary>Active le second facteur par SMS, une fois le numero prouve.</summary>
+    [HttpPost("2fa/sms/activer")]
+    public async Task<ActionResult<object>> ActiverSms([FromBody] TelephoneEtCodeDto dto)
+    {
+        var user = await Moi();
+        if (user == null) return NotFound();
+
+        var numero = OvhSmsService.Normaliser(dto.Telephone);
+        if (numero == null)
+            return BadRequest(new { message = "Numéro illisible." });
+
+        if (!await _sms.Verifier(user, dto.Code, numero))
+            return BadRequest(new { message = "Ce code ne correspond pas, ou il a expiré. Demandez-en un nouveau." });
+
+        // Le numero est prouve : il devient celui du compte.
+        user.PhoneNumber = numero;
+        user.PhoneNumberConfirmed = true;
+        user.TwoFactorMethod = "Sms";
+        user.TwoFactorEnabledAt = DateTime.UtcNow;
+        await _userManager.UpdateAsync(user);
+        await _userManager.SetTwoFactorEnabledAsync(user, true);
+
+        var codes = (await _userManager.GenerateNewTwoFactorRecoveryCodesAsync(user, NombreCodesDeSecours))?.ToList()
+                    ?? new List<string>();
+
+        await _mail.Envoyer(ModelesCourriel.DoubleAuthentification(user.Email!, user.FirstName, true, LienSecurite));
+        await _log.Log("2faActivee", "User", null,
+            $"Double authentification activee (SMS, {OvhSmsService.Masquer(numero)})", user.Id,
+            $"{user.FirstName} {user.LastName}", SessionService.Ip(HttpContext));
+
+        return Ok(new
+        {
+            message = $"La double authentification est active. Les codes partiront au {OvhSmsService.Masquer(numero)}.",
+            codesDeSecours = codes,
+            token = await _sessions.Rafraichir(user, JtiCourant),
+        });
     }
 
     // ═══════════════════════════════════════════
@@ -370,3 +458,5 @@ public class CodeDto { public string? Code { get; set; } }
 public class MotDePasseDto { public string? MotDePasse { get; set; } }
 public class MotDePasseEtCodeDto { public string? MotDePasse { get; set; } public string? Code { get; set; } }
 public class ChangementMotDePasseDto { public string? Actuel { get; set; } public string? Nouveau { get; set; } }
+public class TelephoneDto { public string? Telephone { get; set; } }
+public class TelephoneEtCodeDto { public string? Telephone { get; set; } public string? Code { get; set; } }

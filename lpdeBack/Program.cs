@@ -217,6 +217,11 @@ builder.Services.AddScoped<lpdeBack.Services.SessionService>();
 // Sans serveur configure, l'expediteur ecrit les messages au journal plutot
 // que de les perdre : on suit un flux complet en developpement, lien compris.
 builder.Services.AddSingleton<lpdeBack.Services.IEmailSender, lpdeBack.Services.EmailSender>();
+// En singleton : le client SMS garde l'ecart avec l'horloge d'OVH et le nom
+// du compte decouvert. Les remesurer a chaque requete ferait deux appels
+// reseau de plus pour chaque code envoye.
+builder.Services.AddSingleton<lpdeBack.Services.OvhSmsService>();
+builder.Services.AddScoped<lpdeBack.Services.DeuxFacteursSms>();
 builder.Services.AddScoped<lpdeBack.Services.JobImportService>();
 // En singleton : le cache de jetons France Travail n'a d'interet que s'il
 // survit a la requete qui l'a rempli.

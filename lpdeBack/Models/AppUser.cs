@@ -63,6 +63,23 @@ public class AppUser : IdentityUser
     /// <summary>Depuis quand la double authentification protege ce compte.</summary>
     public DateTime? TwoFactorEnabledAt { get; set; }
 
+    /// <summary>
+    /// Par quoi le second facteur se prouve : « Totp » (application) ou
+    /// « Sms ». IdentityUser ne porte qu'un booleen — il sait que la double
+    /// authentification est active, pas comment la verifier. Sans cette
+    /// colonne, la connexion ne saurait pas s'il faut envoyer un SMS ou
+    /// attendre un code deja affiche.
+    /// </summary>
+    [MaxLength(10)]
+    public string? TwoFactorMethod { get; set; }
+
+    /// <summary>
+    /// Dernier SMS expedie a ce compte. Chaque envoi coute un credit :
+    /// sans cette date, un formulaire laisse en boucle viderait le compte
+    /// OVH en une nuit.
+    /// </summary>
+    public DateTime? LastSmsSentAt { get; set; }
+
     /// <summary>Dernier changement de mot de passe : un mot de passe qui n'a jamais bouge est un fait.</summary>
     public DateTime? LastPasswordChangedAt { get; set; }
 

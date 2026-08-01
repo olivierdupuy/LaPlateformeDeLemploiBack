@@ -26,6 +26,7 @@ public class AuthController : ControllerBase
     private readonly SessionService _sessions;
     private readonly IEmailSender _mail;
     private readonly IHttpClientFactory _http;
+    private readonly DeuxFacteursSms _sms;
 
     public AuthController(
         UserManager<AppUser> userManager,
@@ -35,7 +36,8 @@ public class AuthController : ControllerBase
         AppDbContext context,
         SessionService sessions,
         IEmailSender mail,
-        IHttpClientFactory http)
+        IHttpClientFactory http,
+        DeuxFacteursSms sms)
     {
         _userManager = userManager;
         _signInManager = signInManager;
@@ -45,6 +47,7 @@ public class AuthController : ControllerBase
         _sessions = sessions;
         _mail = mail;
         _http = http;
+        _sms = sms;
     }
 
     private string SiteUrl => (_config["App:PublicUrl"] ?? "").TrimEnd('/');
@@ -146,16 +149,36 @@ public class AuthController : ControllerBase
         }
 
         if (await _userManager.GetTwoFactorEnabledAsync(user))
-        {
-            return Ok(new AuthResponseDto
-            {
-                RequiresTwoFactor = true,
-                ChallengeToken = _sessions.OuvrirDefi(user),
-                User = MapToUserDto(user),
-            });
-        }
+            return Ok(await Defi(user));
 
         return Ok(await Reponse(user, "Password"));
+    }
+
+    /// <summary>
+    /// Renvoie un code par SMS pendant le defi.
+    ///
+    /// Un SMS se perd, arrive en retard, ou s'efface avant d'etre lu. Sans
+    /// ce renvoi, il faudrait ressaisir son mot de passe pour en obtenir un
+    /// autre — et le delai entre deux envois se compterait depuis le
+    /// premier, ce qui donnerait l'impression que rien ne marche.
+    /// </summary>
+    [HttpPost("2fa/renvoyer")]
+    public async Task<ActionResult<object>> RenvoyerCode([FromBody] RenvoiDto dto)
+    {
+        var userId = _sessions.LireDefi(dto.ChallengeToken);
+        if (userId == null)
+            return Unauthorized(new { message = "Cette demande a expiré. Reprenez la connexion depuis le début." });
+
+        var user = await _userManager.FindByIdAsync(userId);
+        if (user == null || !user.IsActive) return Unauthorized(new { message = "Compte indisponible." });
+
+        if ((user.TwoFactorMethod ?? "Totp") != "Sms")
+            return BadRequest(new { message = "Ce compte utilise une application d'authentification : le code s'y affiche déjà." });
+
+        var r = await _sms.Envoyer(user);
+        if (!r.Parti)
+            return BadRequest(new { message = r.Message, secondesAAttendre = r.SecondesAAttendre });
+        return Ok(new { message = r.Message });
     }
 
     /// <summary>
@@ -180,9 +203,16 @@ public class AuthController : ControllerBase
         if (await _userManager.IsLockedOutAsync(user))
             return StatusCode(StatusCodes.Status423Locked, new { message = "Trop de tentatives : ce compte est bloqué quinze minutes." });
 
+        // L'ordre suit ce que le compte utilise : inutile de verifier un
+        // code d'application sur un compte qui recoit des SMS, mais les
+        // deux sont tentes — un compte qui change de methode ne doit pas
+        // refuser un code encore valable de l'ancienne.
         var parApplication = await _userManager.VerifyTwoFactorTokenAsync(
             user, _userManager.Options.Tokens.AuthenticatorTokenProvider,
             SessionService.CodeApplication(dto.Code));
+
+        if (!parApplication)
+            parApplication = await _sms.Verifier(user, dto.Code);
 
         var parSecours = false;
         if (!parApplication)
@@ -586,16 +616,42 @@ public class AuthController : ControllerBase
         }
 
         if (await _userManager.GetTwoFactorEnabledAsync(user))
-        {
-            return Ok(new AuthResponseDto
-            {
-                RequiresTwoFactor = true,
-                ChallengeToken = _sessions.OuvrirDefi(user),
-                User = MapToUserDto(user),
-            });
-        }
+            return Ok(await Defi(user));
 
         return Ok(await Reponse(user, fournisseur));
+    }
+
+    /// <summary>
+    /// Ouvre le defi de second facteur.
+    ///
+    /// Sur un compte qui recoit des SMS, le code part d'ici : il n'existe
+    /// pas avant qu'on le demande, contrairement a celui d'une application
+    /// qui s'affiche en permanence. Si l'envoi echoue — plus de credit,
+    /// operateur qui refuse — le defi s'ouvre quand meme et le dit : les
+    /// codes de secours restent la seule porte, et il faut qu'elle soit
+    /// visible.
+    /// </summary>
+    private async Task<AuthResponseDto> Defi(AppUser user)
+    {
+        var methode = user.TwoFactorMethod ?? "Totp";
+        var reponse = new AuthResponseDto
+        {
+            RequiresTwoFactor = true,
+            ChallengeToken = _sessions.OuvrirDefi(user),
+            TwoFactorMethod = methode,
+            User = MapToUserDto(user),
+        };
+
+        if (methode == "Sms")
+        {
+            reponse.TwoFactorTarget = OvhSmsService.Masquer(user.PhoneNumber);
+            var r = await _sms.Envoyer(user);
+            reponse.TwoFactorMessage = r.Parti
+                ? r.Message
+                : $"{r.Message} Utilisez l'un de vos codes de secours.";
+        }
+
+        return reponse;
     }
 
     /// <summary>Ouvre la session, note la connexion, alerte si l'appareil est neuf.</summary>
