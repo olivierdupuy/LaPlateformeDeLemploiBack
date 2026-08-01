@@ -38,6 +38,7 @@ public sealed class EmailSender : IEmailSender
     private readonly string? _motDePasse;
     private readonly string _expediteur;
     private readonly string _nomExpediteur;
+    private readonly string? _adresseDeReponse;
     private readonly bool _ssl;
 
     public EmailSender(IConfiguration config, ILogger<EmailSender> log)
@@ -49,6 +50,7 @@ public sealed class EmailSender : IEmailSender
         _motDePasse = config["Email:Password"];
         _expediteur = config["Email:From"] ?? "contact@laplateformedelemploi.com";
         _nomExpediteur = config["Email:FromName"] ?? "La Plateforme de l'emploi";
+        _adresseDeReponse = config["Email:ReplyTo"];
         _ssl = !bool.TryParse(config["Email:Ssl"], out var s) || s;
     }
 
@@ -66,7 +68,9 @@ public sealed class EmailSender : IEmailSender
         !string.IsNullOrWhiteSpace(_hote) && !string.IsNullOrWhiteSpace(_identifiant);
 
     public string Etat => EstConfigure
-        ? $"{_hote}:{_port} ({(_ssl ? "STARTTLS" : "en clair")}), compte {_identifiant}, expediteur {_expediteur}"
+        ? $"{_hote}:{_port} ({(_ssl ? "STARTTLS" : "en clair")}), compte {_identifiant}, " +
+          $"expediteur {_expediteur}" +
+          (string.IsNullOrWhiteSpace(_adresseDeReponse) ? "" : $", reponses vers {_adresseDeReponse}")
         : string.IsNullOrWhiteSpace(_hote)
             ? "aucun serveur configuré : les messages sont écrits au journal"
             : $"{_hote} est renseigné mais aucun compte ne l'est : les messages sont écrits au journal";
@@ -108,6 +112,13 @@ public sealed class EmailSender : IEmailSender
                 IsBodyHtml = true,
             };
             mail.To.Add(message.Destinataire);
+
+            // L'expedition part de la boite qui s'authentifie — Gandi refuse
+            // d'expedier au nom d'une autre. Mais le pied de nos messages
+            // invite a repondre, et une reponse a « noreply@ » tomberait dans
+            // le vide : elle est renvoyee vers l'adresse publique.
+            if (!string.IsNullOrWhiteSpace(_adresseDeReponse))
+                mail.ReplyToList.Add(new MailAddress(_adresseDeReponse));
 
             // Le texte brut n'est pas une politesse : les filtres anti-spam
             // penalisent un message qui n'a que du HTML, et certains clients
