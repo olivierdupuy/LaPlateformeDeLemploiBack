@@ -62,20 +62,9 @@ public class RedactionNewsletterService : BackgroundService
         using var horloge = new PeriodicTimer(Intervalle);
         do
         {
-            try
-            {
-                await Preparer(arret);
-                // Un tour reussi n'est pas forcement un tour qui produit :
-                // le plus souvent il n'y a rien a faire. Ce qui compte
-                // pour la sonde est que le tour ait eu lieu.
-                EtatDesServices.Noter("redaction-newsletter", true, "tour effectué");
-            }
+            try { await Preparer(arret); }
             catch (OperationCanceledException) { return; }
-            catch (Exception ex)
-            {
-                EtatDesServices.Noter("redaction-newsletter", false, ex.Message);
-                _log.LogError(ex, "Redaction automatique de la lettre : echec du tour");
-            }
+            catch (Exception ex) { _log.LogError(ex, "Redaction automatique de la lettre : echec du tour"); }
         }
         while (await horloge.WaitForNextTickAsync(arret));
     }

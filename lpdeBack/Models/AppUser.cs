@@ -88,13 +88,4 @@ public class AppUser : IdentityUser
     /// au prix d'une requete d'agregation par fiche consultee.
     /// </summary>
     public DateTime? LastLoginAt { get; set; }
-
-    /// <summary>
-    /// Le preavis de fermeture pour inactivite a-t-il ete envoye ?
-    ///
-    /// Sans ce drapeau, un compte inactif recevrait le meme avertissement
-    /// chaque nuit pendant deux mois. Il se remet a false a la connexion
-    /// suivante, qui repousse aussi l'echeance.
-    /// </summary>
-    public bool PreavisSuppressionEnvoye { get; set; }
 }

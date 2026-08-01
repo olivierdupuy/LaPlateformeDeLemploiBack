@@ -9,8 +9,6 @@ using lpdeBack.DTOs;
 using lpdeBack.Hubs;
 using lpdeBack.Services;
 
-using lpdeBack.Validation;
-
 namespace lpdeBack.Controllers;
 
 [ApiController]
@@ -108,10 +106,6 @@ public class MessagesController : ControllerBase
     }
 
     [HttpPost]
-    // Ecrire a un inconnu depuis une adresse qu'on n'a pas prouvee est
-    // exactement ce qui fait d'une plateforme un relais de courriels
-    // indesirables.
-    [AdresseConfirmee]
     public async Task<ActionResult> Send(MessageCreateDto dto)
     {
         var userId = GetUserId();

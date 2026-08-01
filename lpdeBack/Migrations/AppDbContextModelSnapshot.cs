@@ -362,9 +362,6 @@ namespace lpdeBack.Migrations
                         .HasMaxLength(300)
                         .HasColumnType("nvarchar(300)");
 
-                    b.Property<bool>("PreavisSuppressionEnvoye")
-                        .HasColumnType("bit");
-
                     b.Property<string>("ResumeUrl")
                         .HasMaxLength(500)
                         .HasColumnType("nvarchar(500)");

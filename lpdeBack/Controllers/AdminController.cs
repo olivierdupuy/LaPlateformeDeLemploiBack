@@ -1367,22 +1367,6 @@ public class AdminController : ControllerBase
         if (dto.IsActive.HasValue) user.IsActive = dto.IsActive.Value;
         if (dto.PhoneNumber != null) user.PhoneNumber = dto.PhoneNumber;
 
-        // La soupape de la confirmation d'adresse.
-        //
-        // Publier une offre et ecrire a un candidat exigent une adresse
-        // confirmee. Si le message ne parvient jamais — filtre trop
-        // zele, quota d'expedition atteint, adresse professionnelle qui
-        // rejette l'inconnu — le recruteur est bloque sans recours. On
-        // doit pouvoir le debloquer apres verification, et cela se
-        // journalise : confirmer a la place de quelqu'un est un acte.
-        if (dto.EmailConfirmed.HasValue && dto.EmailConfirmed.Value != user.EmailConfirmed)
-        {
-            user.EmailConfirmed = dto.EmailConfirmed.Value;
-            await _log.Log("ConfirmEmailManuel", "User", null,
-                $"Adresse de {user.Email} marquée {(user.EmailConfirmed ? "confirmée" : "non confirmée")} par l'administration",
-                UserId(), UserFullName(), Ip());
-        }
-
         // Le courriel sert d'identifiant de connexion : les deux colonnes
         // d'Identity doivent bouger ensemble, sinon le compte ne se
         // connecte plus.
@@ -1653,13 +1637,6 @@ public class AdminUserUpdateDto
     [Longueur(100)] public string? FirstName { get; set; }
     [Longueur(100)] public string? LastName { get; set; }
     [AdresseCourriel] public string? Email { get; set; }
-
-    /// <summary>
-    /// Debloque un compte dont le message de confirmation n'est jamais
-    /// arrive. A n'utiliser qu'apres avoir verifie autrement que
-    /// l'adresse est bien la sienne.
-    /// </summary>
-    public bool? EmailConfirmed { get; set; }
     [TelephoneFr] public string? PhoneNumber { get; set; }
     [Longueur(150)] public string? Title { get; set; }
     [Longueur(500)] public string? Bio { get; set; }

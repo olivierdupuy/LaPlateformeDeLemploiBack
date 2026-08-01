@@ -5,8 +5,3 @@ obj/
 firebase-service-account.json
 la-plateforme-de-l-emploi-*.json
 **/wwwroot/uploads/
-
-# Les CV, sortis de wwwroot pour cesser d'etre servis sans
-# authentification. Ils ne doivent pas non plus entrer au depot.
-**/donnees/
-**/sauvegardes/
