@@ -97,9 +97,22 @@ public class DeuxFacteursSms
         // stocke nulle part, et il devient faux si l'un des deux change.
         var code = await _users.GenerateChangePhoneNumberTokenAsync(user, destinataire);
 
+        // ── Pourquoi ce message est si court ──
+        //
+        // Un SMS porte 160 caracteres, et OVH ajoute une quinzaine de
+        // caracteres de clause STOP tant qu'aucun expediteur valide n'est
+        // declare. La premiere redaction en faisait 166 : avec la clause,
+        // 181, donc DEUX credits a chaque connexion — le solde s'epuisait
+        // deux fois plus vite pour rien.
+        //
+        // Deuxieme piege, plus brutal : un seul caractere hors du jeu
+        // GSM 03.38 fait basculer le message en UCS-2, ou un SMS ne porte
+        // plus que 70 caracteres. « à », « é », « è », « ç » y sont ; « ê »,
+        // « â », « î », « ô », « û » n'y sont pas. Ne pas ecrire « meme »
+        // avec un accent circonflexe ici n'est pas une negligence.
         var (parti, erreur) = await _sms.Envoyer(destinataire,
             $"{code} est votre code de connexion à La Plateforme de l'emploi. " +
-            "Il expire dans quelques minutes. Si vous ne cherchez pas à vous connecter, changez votre mot de passe.");
+            "Valable quelques minutes. Ne le communiquez à personne.");
 
         if (!parti)
             return new Resultat(false, erreur ?? "Le SMS n'est pas parti.");
