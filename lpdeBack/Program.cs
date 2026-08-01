@@ -381,6 +381,11 @@ builder.Services.AddScoped<lpdeBack.Services.DeuxFacteursSms>();
 builder.Services.AddSingleton<lpdeBack.Services.BrevoService>();
 builder.Services.AddScoped<lpdeBack.Services.NewsletterService>();
 builder.Services.AddHostedService<lpdeBack.Services.NewsletterSenderService>();
+
+// La redaction hebdomadaire de la lettre. Elle ne fait que deposer des
+// brouillons : c'est l'expediteur ci-dessus qui envoie, et lui seul, sur
+// un clic humain.
+builder.Services.AddHostedService<lpdeBack.Services.RedactionNewsletterService>();
 builder.Services.AddScoped<lpdeBack.Services.JobImportService>();
 // En singleton : le cache de jetons France Travail n'a d'interet que s'il
 // survit a la requete qui l'a rempli.

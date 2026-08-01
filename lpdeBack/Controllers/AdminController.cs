@@ -1469,6 +1469,7 @@ public class AdminController : ControllerBase
         {
             "welcome_message", "contact_email", "allow_registration", "require_moderation",
             "maintenance_mode", "max_applications_per_candidate",
+            "newsletter_auto_redaction",
             "legal_raison_sociale", "legal_adresse", "legal_siret", "legal_tva",
             "legal_telephone", "legal_directeur_publication", "legal_hebergeur", "legal_dpo",
             "legal_conservation_compte", "legal_conservation_candidatures", "legal_conservation_journal",
