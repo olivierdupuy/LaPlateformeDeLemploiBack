@@ -21,17 +21,52 @@ public class ApplicationsController : ControllerBase
     private readonly IHubContext<ChatHub> _hubContext;
     private readonly PushNotificationService _pushService;
     private readonly ActivityLogService _log;
+    private readonly IEmailSender _mail;
+    private readonly IConfiguration _config;
+    private readonly ILogger<ApplicationsController> _journal;
 
-    public ApplicationsController(AppDbContext context, IHubContext<ChatHub> hubContext, PushNotificationService pushService, ActivityLogService log)
+    public ApplicationsController(AppDbContext context, IHubContext<ChatHub> hubContext,
+                                  PushNotificationService pushService, ActivityLogService log,
+                                  IEmailSender mail, IConfiguration config,
+                                  ILogger<ApplicationsController> journal)
     {
         _log = log;
         _context = context;
         _hubContext = hubContext;
         _pushService = pushService;
+        _mail = mail;
+        _config = config;
+        _journal = journal;
     }
 
     private string? GetUserId() => User.FindFirstValue(ClaimTypes.NameIdentifier);
     private bool IsAdmin() => User.IsInRole("Admin");
+    private string SiteUrl => (_config["App:PublicUrl"] ?? "").TrimEnd('/');
+
+    /// <summary>
+    /// Expedie un courriel sans jamais faire echouer ce qui l'a declenche.
+    ///
+    /// Une candidature enregistree est un fait acquis : si Brevo est en
+    /// panne, si l'adresse rebondit, si le reseau tousse, cela ne doit pas
+    /// rendre une erreur a quelqu'un qui vient de postuler — il croirait
+    /// devoir recommencer, et le doublon serait refuse.
+    ///
+    /// L'echec se journalise, et rien de plus. C'est le seul endroit du
+    /// code ou avaler une exception est la bonne conduite.
+    /// </summary>
+    private async Task Prevenir(Courriel? message, string quoi)
+    {
+        if (message == null) return;
+        try
+        {
+            await _mail.Envoyer(message);
+        }
+        catch (Exception ex)
+        {
+            _journal.LogWarning(ex, "Courriel « {Quoi} » non expedie a {Destinataire}",
+                                quoi, message.Destinataire);
+        }
+    }
 
     /// <summary>Vrai si une question de preselection obligatoire reste sans
     /// reponse. Le tunnel de candidature l'empeche deja, mais l'API reste
@@ -213,6 +248,16 @@ public class ApplicationsController : ControllerBase
             await _pushService.SendToUser(app.UserId, "Statut de candidature modifie",
                 $"Votre candidature pour \"{app.JobOffer.Title}\" est maintenant {statusLabels.GetValueOrDefault(dto.Status, dto.Status)}.",
                 "/tabs/applications");
+
+            // C'est la reponse qu'on attend le plus, et c'est celle qui ne
+            // partait nulle part. Un refus annonce vaut mieux qu'un silence,
+            // et personne ne revient chaque jour verifier sur un site.
+            var candidat = await _context.Users.FirstOrDefaultAsync(u => u.Id == app.UserId);
+            if (candidat?.Email != null)
+                await Prevenir(ModelesCourriel.StatutCandidature(
+                    candidat.Email, candidat.FirstName, app.JobOffer.Title,
+                    app.JobOffer.Company, dto.Status, $"{SiteUrl}/suivi"),
+                    "statut de candidature");
         }
 
         return NoContent();
@@ -538,6 +583,32 @@ public class ApplicationsController : ControllerBase
                     await _hubContext.Clients.Client(connId).SendAsync("NewNotification");
             }
         }
+
+        // ── Ce qui sort du site ──
+        //
+        // Tout ce qui precede — notification, temps reel, notification
+        // poussee — suppose d'etre sur la plateforme, ou d'y revenir. Le
+        // recruteur qui ne l'ouvre pas ignorait qu'on lui avait ecrit, et
+        // le candidat n'avait aucune trace de sa demarche dans sa boite.
+        //
+        // Ces envois viennent apres l'enregistrement, et ne peuvent pas
+        // l'annuler : voir « Prevenir ».
+        await Prevenir(ModelesCourriel.CandidatureRecue(
+            user.Email!, user.FirstName, job.Title, job.Company,
+            $"{SiteUrl}/suivi"), "candidature recue");
+
+        var recruteur = job.CreatedByUserId == null ? null
+            : await _context.Users.FirstOrDefaultAsync(u => u.Id == job.CreatedByUserId);
+
+        if (recruteur?.Email != null)
+            await Prevenir(ModelesCourriel.NouvelleCandidature(
+                recruteur.Email, recruteur.FirstName,
+                $"{user.FirstName} {user.LastName}", job.Title,
+                $"{SiteUrl}/recruteur/candidatures", app.City,
+                // Le score ne veut rien dire sans questions : on ne le
+                // montre que lorsqu'il en resume vraiment des reponses.
+                string.IsNullOrWhiteSpace(job.ScreeningQuestions) ? null : app.QualificationScore),
+                "nouvelle candidature");
 
         return CreatedAtAction(nameof(GetById), new { id = app.Id }, app);
     }

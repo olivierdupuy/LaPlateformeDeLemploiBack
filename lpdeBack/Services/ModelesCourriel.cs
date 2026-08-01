@@ -394,4 +394,137 @@ public static class ModelesCourriel
             </body></html>
             """;
     }
+
+    // ══════════════════════════════════════
+    //  Candidatures
+    //
+    //  Tout le cycle se deroulait jusqu'ici sans un seul courriel :
+    //  notification interne, temps reel, notification poussee — trois
+    //  canaux qui supposent d'etre sur le site. Un recruteur qui ne
+    //  l'ouvre pas ne savait pas qu'on lui avait ecrit, et un candidat
+    //  n'avait aucune trace de sa demarche dans sa boite.
+    // ══════════════════════════════════════
+
+    /// <summary>Au candidat, quand sa candidature est enregistree.</summary>
+    public static Courriel CandidatureRecue(string destinataire, string prenom,
+                                            string poste, string entreprise, string lien)
+    {
+        const string titre = "Votre candidature est bien partie";
+        var corps = $"""
+            <p style="margin:0 0 12px">Bonjour {E(prenom)},</p>
+            <p style="margin:0 0 12px">
+              Votre candidature au poste de <strong>{E(poste)}</strong> chez
+              <strong>{E(entreprise)}</strong> vient d'etre transmise au recruteur.
+            </p>
+            <p style="margin:0 0 12px">
+              Vous serez prevenu ici des qu'elle change d'etat. D'ici la, elle reste
+              consultable — et modifiable tant que personne ne l'a ouverte — depuis
+              le suivi de vos candidatures.
+            </p>
+            <p style="margin:0">
+              Gardez ce message : c'est la trace de votre demarche, avec sa date.
+            </p>
+            """;
+        var texte = $"""
+            Bonjour {prenom},
+
+            Votre candidature au poste de {poste} chez {entreprise} vient d'etre
+            transmise au recruteur.
+
+            Suivez-la ici : {lien}
+
+            {Marque}
+            """;
+        return new Courriel(destinataire, $"Candidature envoyee — {poste}",
+                            Envelopper(titre, corps, "Suivre ma candidature", lien), texte);
+    }
+
+    /// <summary>Au recruteur, quand quelqu'un postule a son offre.</summary>
+    public static Courriel NouvelleCandidature(string destinataire, string prenomRecruteur,
+                                               string candidat, string poste, string lien,
+                                               string? ville, int? score)
+    {
+        const string titre = "Une nouvelle candidature vous attend";
+
+        // Le detail utile tient en deux lignes : qui, pour quel poste, et
+        // d'ou. Le score n'apparait que s'il veut dire quelque chose —
+        // c'est-a-dire si le recruteur a pose des questions.
+        var precisions = new List<string>();
+        if (!string.IsNullOrWhiteSpace(ville)) precisions.Add($"Depuis {E(ville)}");
+        if (score is { } sc) precisions.Add($"Reponses aux questions : {sc} %");
+        var ligne = precisions.Count > 0
+            ? $"""<p style="margin:0 0 12px;color:#577177">{string.Join(" &middot; ", precisions)}</p>"""
+            : "";
+
+        var corps = $"""
+            <p style="margin:0 0 12px">Bonjour {E(prenomRecruteur)},</p>
+            <p style="margin:0 0 12px">
+              <strong>{E(candidat)}</strong> vient de postuler a votre offre
+              <strong>{E(poste)}</strong>.
+            </p>
+            {ligne}
+            <p style="margin:0">
+              Une reponse rapide, meme negative, vaut mieux qu'un silence : c'est ce
+              que les candidats retiennent d'une entreprise.
+            </p>
+            """;
+        var texte = $"""
+            Bonjour {prenomRecruteur},
+
+            {candidat} vient de postuler a votre offre {poste}.
+            {(string.IsNullOrWhiteSpace(ville) ? "" : $"Depuis {ville}.")}
+
+            Ouvrir la candidature : {lien}
+
+            {Marque}
+            """;
+        return new Courriel(destinataire, $"Nouvelle candidature — {poste}",
+                            Envelopper(titre, corps, "Ouvrir la candidature", lien), texte);
+    }
+
+    /// <summary>
+    /// Au candidat, quand le recruteur decide.
+    ///
+    /// Le ton suit la nouvelle : un refus ne se felicite pas, et une
+    /// acceptation ne se murmure pas. Le message dit toujours ce qui se
+    /// passe ensuite, meme quand la reponse est non — c'est ce qui
+    /// distingue une reponse d'un silence administratif.
+    /// </summary>
+    public static Courriel StatutCandidature(string destinataire, string prenom,
+                                             string poste, string entreprise,
+                                             string statut, string lien)
+    {
+        var (titre, phrase, suite) = statut switch
+        {
+            "Accepted" => ("Votre candidature est retenue",
+                $"Bonne nouvelle : <strong>{E(entreprise)}</strong> retient votre candidature au poste de <strong>{E(poste)}</strong>.",
+                "Le recruteur va vous contacter. Vous pouvez aussi lui ecrire directement depuis la messagerie."),
+            "Rejected" => ("Votre candidature n'a pas ete retenue",
+                $"<strong>{E(entreprise)}</strong> ne donnera pas suite a votre candidature au poste de <strong>{E(poste)}</strong>.",
+                "Ce n'est pas un jugement sur votre parcours : une offre se joue souvent sur un detail de calendrier ou de perimetre. D'autres offres proches de celle-ci vous attendent."),
+            "Reviewed" => ("Votre candidature a ete consultee",
+                $"<strong>{E(entreprise)}</strong> a ouvert votre candidature au poste de <strong>{E(poste)}</strong>.",
+                "Rien n'est decide a ce stade. Vous serez prevenu des qu'une suite sera donnee."),
+            _ => ("Votre candidature a change d'etat",
+                $"Votre candidature au poste de <strong>{E(poste)}</strong> chez <strong>{E(entreprise)}</strong> a change d'etat.",
+                "Le detail est consultable dans le suivi de vos candidatures."),
+        };
+
+        var corps = $"""
+            <p style="margin:0 0 12px">Bonjour {E(prenom)},</p>
+            <p style="margin:0 0 12px">{phrase}</p>
+            <p style="margin:0">{suite}</p>
+            """;
+        var texte = $"""
+            Bonjour {prenom},
+
+            {WebUtility.HtmlDecode(System.Text.RegularExpressions.Regex.Replace(phrase, "<.*?>", ""))}
+
+            Voir le detail : {lien}
+
+            {Marque}
+            """;
+        return new Courriel(destinataire, $"{titre} — {poste}",
+                            Envelopper(titre, corps, "Voir ma candidature", lien), texte);
+    }
 }

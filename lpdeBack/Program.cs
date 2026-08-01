@@ -109,15 +109,28 @@ builder.Services.AddRateLimiter(options =>
             }));
 
     // Tout ce qui touche a l'identite : connexion, inscription, code de
-    // second facteur, mot de passe oublie. Dix par minute laissent de la
-    // place aux fautes de frappe et a plusieurs personnes derriere une
-    // meme adresse, sans laisser derouler un dictionnaire.
+    // second facteur, mot de passe oublie.
+    //
+    // Trente par minute, et non dix. Dix paraissait prudent jusqu'a ce
+    // qu'on mesure : une seule adresse couvre souvent tout un bureau
+    // derriere un NAT, et vingt personnes qui se connectent un lundi
+    // matin epuisaient le quota avant la moitie. Une batterie de tests
+    // l'a montre par accident — cinq essais de mot de passe faux, qui
+    // eprouvaient le verrouillage de compte, se faisaient couper avant
+    // d'y arriver.
+    //
+    // Ce n'est pas un relachement : ce n'est pas ce compteur qui arrete
+    // qui devine un mot de passe, c'est le verrouillage du compte au
+    // cinquieme echec. Celui-ci borne le VOLUME — le balayage d'une
+    // liste d'adresses, l'inondation d'inscriptions — et trente par
+    // minute le borne tout aussi bien, puisque chaque compte se ferme
+    // de son cote apres cinq tentatives.
     options.AddPolicy("identite", http =>
         RateLimitPartition.GetFixedWindowLimiter(
             lpdeBack.Validation.AntiRobot.Client(http),
             _ => new FixedWindowRateLimiterOptions
             {
-                PermitLimit = 10,
+                PermitLimit = 30,
                 Window = TimeSpan.FromMinutes(1),
             }));
 
