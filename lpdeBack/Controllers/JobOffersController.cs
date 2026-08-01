@@ -1288,11 +1288,30 @@ public class JobOffersController : ControllerBase
         // Le role suffisait a autoriser la modification : tout compte
         // recruteur pouvait donc reecrire l'offre de n'importe quel autre
         // — titre, description, remuneration, jusqu'au nom de
-        // l'entreprise — et les offres importees, que personne ne possede,
-        // etaient ouvertes a tous. Seuls l'administration et l'auteur de
-        // l'offre peuvent la modifier.
+        // l'entreprise. Seuls l'administration et l'auteur de l'offre
+        // peuvent la modifier.
         if (!IsAdmin() && (job.CreatedByUserId == null || job.CreatedByUserId != GetUserId()))
             return Forbid();
+
+        // Une offre reprise chez un partenaire n'est pas notre contenu.
+        // La reecrire reviendrait a republier sous notre nom une annonce
+        // alteree dont France Travail reste la source de verite : le
+        // candidat lirait ici un intitule ou un salaire que l'employeur
+        // n'a jamais ecrits, et l'annonce d'origine, toujours en ligne,
+        // le contredirait.
+        //
+        // Le refus est pose ici et pas seulement dans l'interface : une
+        // interdiction qui ne vit que dans un formulaire n'en est pas une.
+        //
+        // Retirer une annonce importee reste possible — elle se rejette en
+        // moderation, ce qui la sort des recherches sans toucher a son
+        // contenu.
+        if (job.ExternalSource != null)
+            return Conflict(new
+            {
+                message = $"Cette offre est reprise chez {job.ExternalSource} : son contenu ne se modifie pas ici. "
+                        + "Pour la retirer des recherches, rejetez-la en moderation.",
+            });
 
         job.Title = dto.Title;
         job.Company = dto.Company;
