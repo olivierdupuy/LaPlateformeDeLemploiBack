@@ -92,6 +92,7 @@ public class SanteController : ControllerBase
         var controles = new List<Controle>
         {
             await Base(),
+            Depot(),
             Sauvegarde(),
             Courriel(),
         };
@@ -134,7 +135,11 @@ public class SanteController : ControllerBase
     /// </summary>
     private Controle Sauvegarde()
     {
-        var chemin = Path.Combine(_env.ContentRootPath, "sauvegardes", "etat.json");
+        // Meme dossier commun que le script : hors de l'application, que
+        // le deploiement ne remet pas a zero.
+        var chemin = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
+            "LaPlateformeDeLemploi", "sauvegardes", "etat.json");
         if (!System.IO.File.Exists(chemin))
             return new Controle("sauvegarde", "dégradé", "aucune sauvegarde n'a jamais tourné");
 
@@ -167,6 +172,23 @@ public class SanteController : ControllerBase
         {
             return new Controle("sauvegarde", "dégradé", "état illisible : " + ex.Message);
         }
+    }
+
+    /// <summary>
+    /// Le rangement des CV est-il utilisable ?
+    ///
+    /// Il ne fait plus echouer le demarrage quand le serveur refuse
+    /// d'ecrire — c'est ici qu'on l'apprend, au lieu de le decouvrir
+    /// par un recruteur qui n'arrive plus a ouvrir un CV.
+    /// </summary>
+    private Controle Depot()
+    {
+        var depot = HttpContext.RequestServices.GetService<DepotFichiers>();
+        if (depot == null) return new Controle("dépôt des CV", "dégradé", "non configuré");
+
+        return depot.Empechement == null
+            ? new Controle("dépôt des CV", "sain", depot.Racine)
+            : new Controle("dépôt des CV", "dégradé", depot.Empechement);
     }
 
     /// <summary>De quoi envoyer ? Sans cela, aucun mot de passe oublie ne se retrouve.</summary>

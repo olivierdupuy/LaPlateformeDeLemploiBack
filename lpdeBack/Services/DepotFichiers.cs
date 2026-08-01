@@ -26,19 +26,61 @@ public sealed class DepotFichiers
 
     public string Racine { get; }
 
+    /// <summary>Pourquoi le rangement ne fonctionne pas, s'il ne fonctionne pas.</summary>
+    public string? Empechement { get; private set; }
+
     public DepotFichiers(IWebHostEnvironment env, IConfiguration config, ILogger<DepotFichiers> journal)
     {
         _journal = journal;
 
-        // Configurable, car sur le serveur les donnees ont interet a
-        // survivre a un redeploiement qui remplace le dossier de
-        // l'application.
-        var configure = config["Fichiers:Racine"];
-        Racine = string.IsNullOrWhiteSpace(configure)
-            ? Path.Combine(env.ContentRootPath, "donnees", "cv")
-            : configure;
+        // ── Ou ranger, dans l'ordre de preference ──
+        //
+        // Surtout PAS dans le dossier de l'application. Le deploiement se
+        // fait par « msdeploy -verb:sync », qui rend la destination
+        // identique a la source : tout ce que l'application a ecrit chez
+        // elle disparait a la mise en ligne suivante. Les CV vivent donc
+        // a cote, dans un dossier que le deploiement ne regarde pas.
+        //
+        // Et aucune de ces tentatives ne doit faire echouer le
+        // demarrage : un serveur qui refuse d'ecrire quelque part doit
+        // donner un site sans consultation de CV, pas un site eteint.
+        var candidats = new[]
+        {
+            config["Fichiers:Racine"],
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
+                         "LaPlateformeDeLemploi", "cv"),
+            Path.Combine(env.ContentRootPath, "donnees", "cv"),
+            Path.Combine(Path.GetTempPath(), "lpde-cv"),
+        };
 
-        Directory.CreateDirectory(Racine);
+        var refus = new List<string>();
+        foreach (var candidat in candidats)
+        {
+            if (string.IsNullOrWhiteSpace(candidat)) continue;
+            try
+            {
+                Directory.CreateDirectory(candidat);
+
+                // Creer le dossier ne prouve pas qu'on peut y ecrire.
+                var temoin = Path.Combine(candidat, ".ecriture");
+                File.WriteAllText(temoin, "");
+                File.Delete(temoin);
+
+                Racine = candidat;
+                _journal.LogInformation("Depot des fichiers : {Racine}", Racine);
+                return;
+            }
+            catch (Exception ex)
+            {
+                refus.Add($"{candidat} ({ex.GetType().Name})");
+            }
+        }
+
+        // Aucun n'a marche. On demarre quand meme : « Chemin » rendra
+        // null, les CV repondront 404, et la sonde de sante le dira.
+        Racine = candidats.Last()!;
+        Empechement = "aucun dossier inscriptible — " + string.Join(", ", refus);
+        _journal.LogError("Depot des fichiers indisponible : {Empechement}", Empechement);
     }
 
     /// <summary>
@@ -136,8 +178,35 @@ public sealed class DepotFichiers
     /// </summary>
     public void RapatrierDepuisWwwroot(IWebHostEnvironment env)
     {
-        var ancien = Path.Combine(env.WebRootPath ?? Path.Combine(env.ContentRootPath, "wwwroot"),
-                                  "uploads", "resumes");
+        try { RapatrierVraiment(env); }
+        catch (Exception ex)
+        {
+            // Le rapatriement est une commodite, pas une condition de
+            // service. Un demarrage ne se perd pas pour cela.
+            _journal.LogError(ex, "Rapatriement des fichiers impossible");
+        }
+    }
+
+    private void RapatrierVraiment(IWebHostEnvironment env)
+    {
+        // Deux emplacements a vider : celui d'origine, dans wwwroot, ou
+        // les fichiers etaient servis sans authentification ; et celui
+        // du premier correctif, sous le dossier de l'application, ou le
+        // deploiement les aurait effaces.
+        foreach (var ancien in new[]
+                 {
+                     Path.Combine(env.WebRootPath ?? Path.Combine(env.ContentRootPath, "wwwroot"),
+                                  "uploads", "resumes"),
+                     Path.Combine(env.ContentRootPath, "donnees", "cv"),
+                 })
+        {
+            if (!string.Equals(ancien, Racine, StringComparison.OrdinalIgnoreCase))
+                Vider(ancien);
+        }
+    }
+
+    private void Vider(string ancien)
+    {
         if (!Directory.Exists(ancien)) return;
 
         var deplaces = 0;
@@ -155,12 +224,13 @@ public sealed class DepotFichiers
             }
             catch (Exception ex)
             {
-                _journal.LogError(ex, "Fichier « {Fichier} » toujours exposé dans wwwroot", source);
+                _journal.LogError(ex, "Fichier « {Fichier} » non rapatrié depuis {Ancien}", source, ancien);
             }
         }
 
         if (deplaces > 0)
-            _journal.LogWarning("{Nombre} fichier(s) sortis de wwwroot : ils n'étaient servis sans authentification", deplaces);
+            _journal.LogWarning("{Nombre} fichier(s) rapatriés depuis {Ancien} vers {Racine}",
+                                deplaces, ancien, Racine);
 
         try
         {

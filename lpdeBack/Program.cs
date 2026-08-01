@@ -472,10 +472,20 @@ else
 
 // Les fichiers deposes ont quitte wwwroot ; ce rapatriement s'assure
 // qu'aucun n'y reste, y compris ceux televerses avant le correctif.
-using (var portee = app.Services.CreateScope())
+//
+// Enrobe : aucune etape de confort ne doit empecher l'application de
+// demarrer. Un site qui ne se leve pas est toujours pire que le
+// probleme qu'on essayait de resoudre — cette ligne a deja coute une
+// interruption de service.
+try
 {
+    using var portee = app.Services.CreateScope();
     portee.ServiceProvider.GetRequiredService<lpdeBack.Services.DepotFichiers>()
           .RapatrierDepuisWwwroot(app.Environment);
+}
+catch (Exception ex)
+{
+    app.Logger.LogError(ex, "Preparation du depot de fichiers impossible — l'application demarre sans");
 }
 
 // Ceinture et bretelles : meme si un fichier reapparaissait sous

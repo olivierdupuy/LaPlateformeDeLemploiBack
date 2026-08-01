@@ -48,8 +48,14 @@ param(
 $ErrorActionPreference = 'Stop'
 $racine = Split-Path -Parent $PSScriptRoot
 
-if (-not $Destination) { $Destination = Join-Path $racine 'sauvegardes' }
-if (-not $Fichiers)    { $Fichiers    = Join-Path $racine 'donnees\cv' }
+# Hors du dossier de l'application, imperativement : le deploiement
+# se fait par « msdeploy -verb:sync », qui rend la destination
+# identique a la source. Une sauvegarde ecrite chez l'application
+# disparaitrait a la mise en ligne suivante — c'est-a-dire au pire
+# moment possible.
+$commun = Join-Path $env:ProgramData 'LaPlateformeDeLemploi'
+if (-not $Destination) { $Destination = Join-Path $commun 'sauvegardes' }
+if (-not $Fichiers)    { $Fichiers    = Join-Path $commun 'cv' }
 
 $horodatage = Get-Date -Format 'yyyyMMdd-HHmmss'
 $dossier = Join-Path $Destination $horodatage

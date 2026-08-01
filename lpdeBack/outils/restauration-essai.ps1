@@ -25,7 +25,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $racine = Split-Path -Parent $PSScriptRoot
-if (-not $Source) { $Source = Join-Path $racine 'sauvegardes' }
+if (-not $Source) { $Source = Join-Path (Join-Path $env:ProgramData 'LaPlateformeDeLemploi') 'sauvegardes' }
 
 # Un chemin Windows peut contenir une apostrophe — « La Plateforme de
 # l'emploi » en contient une — et elle refermerait la chaine SQL au
