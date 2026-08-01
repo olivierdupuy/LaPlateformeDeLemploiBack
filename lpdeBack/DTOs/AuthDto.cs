@@ -78,10 +78,10 @@ public class UpdateProfileDto
     [Longueur(Limites.Nom), SansBalisage]
     public string? City { get; set; }
 
-    [AdresseWeb]
+    [AdresseWeb(ExterneSeulement = true)]
     public string? LinkedInUrl { get; set; }
 
-    [AdresseWeb]
+    [AdresseWeb(ExterneSeulement = true)]
     public string? PortfolioUrl { get; set; }
 
     public bool? IsSearchable { get; set; }

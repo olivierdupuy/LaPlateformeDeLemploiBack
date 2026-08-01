@@ -361,7 +361,7 @@ public class CompanyProfileDto
     [Longueur(Limites.Ligne), SansBalisage]
     public string? Headquarters { get; set; }
 
-    [AdresseWeb]
+    [AdresseWeb(ExterneSeulement = true)]
     public string? Website { get; set; }
 
     [StringLength(Limites.Texte, ErrorMessage = "La présentation ne peut pas dépasser 20 000 caractères.")]

@@ -1503,8 +1503,8 @@ public class AdminUserUpdateDto
     [Longueur(200)] public string? Education { get; set; }
     [Longueur(100)] public string? City { get; set; }
     [Longueur(200)] public string? Company { get; set; }
-    [AdresseWeb] public string? LinkedInUrl { get; set; }
-    [AdresseWeb] public string? PortfolioUrl { get; set; }
+    [AdresseWeb(ExterneSeulement = true)] public string? LinkedInUrl { get; set; }
+    [AdresseWeb(ExterneSeulement = true)] public string? PortfolioUrl { get; set; }
     [AdresseWeb] public string? AvatarUrl { get; set; }
     [AdresseWeb] public string? ResumeUrl { get; set; }
     [Range(0, 70, ErrorMessage = "Le nombre d'années d'expérience doit être compris entre 0 et 70.")]

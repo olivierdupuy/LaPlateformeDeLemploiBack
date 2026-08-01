@@ -92,7 +92,7 @@ public class JobEventDto
     [Longueur(Limites.Ligne), SansBalisage]
     public string? Location { get; set; }
 
-    [AdresseWeb]
+    [AdresseWeb(ExterneSeulement = true)]
     public string? Url { get; set; }
 
     [Longueur(Limites.Ligne), SansBalisage]

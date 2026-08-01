@@ -104,15 +104,31 @@ public sealed class TelephoneFrAttribute : ValidationAttribute
 /// « javascript:… » ou « data:… ». Le lien est ensuite rendu tel quel
 /// dans une fiche publique : le clic exécuterait ce que l'auteur a
 /// écrit, dans la session de qui l'a ouvert.
+///
+/// Un chemin interne est admis — « /uploads/resumes/… ». Ce n'est pas
+/// une brèche : il ne peut désigner que ce serveur, et c'est sous cette
+/// forme que le téléversement enregistre un CV, un avatar, un logo.
+/// N'accepter que l'absolu aurait refusé toute candidature portant un
+/// CV, ce qui est le cas ordinaire.
+///
+/// Le double « // » est écarté au passage : « //ailleurs.fr » est un
+/// chemin pour qui lit naïvement, et une adresse absolue pour le
+/// navigateur.
 /// </summary>
 public sealed class AdresseWebAttribute : ValidationAttribute
 {
+    /// <summary>Refuser un chemin interne, pour un champ qui vise l'extérieur.</summary>
+    public bool ExterneSeulement { get; set; }
+
     public override bool IsValid(object? value)
     {
         if (value is null) return true;
         var s = (value as string ?? "").Trim();
         if (s.Length == 0) return true;
         if (s.Length > Limites.Url) return false;
+
+        if (!ExterneSeulement && s.StartsWith('/') && !s.StartsWith("//"))
+            return true;
 
         return Uri.TryCreate(s, UriKind.Absolute, out var u)
             && (u.Scheme == Uri.UriSchemeHttp || u.Scheme == Uri.UriSchemeHttps)
