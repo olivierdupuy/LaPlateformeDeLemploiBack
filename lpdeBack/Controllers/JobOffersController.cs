@@ -1285,6 +1285,15 @@ public class JobOffersController : ControllerBase
         var job = await _context.JobOffers.FindAsync(id);
         if (job == null) return NotFound();
 
+        // Le role suffisait a autoriser la modification : tout compte
+        // recruteur pouvait donc reecrire l'offre de n'importe quel autre
+        // — titre, description, remuneration, jusqu'au nom de
+        // l'entreprise — et les offres importees, que personne ne possede,
+        // etaient ouvertes a tous. Seuls l'administration et l'auteur de
+        // l'offre peuvent la modifier.
+        if (!IsAdmin() && (job.CreatedByUserId == null || job.CreatedByUserId != GetUserId()))
+            return Forbid();
+
         job.Title = dto.Title;
         job.Company = dto.Company;
         job.Location = dto.Location;

@@ -19,9 +19,11 @@ public class ApplicationsController : ControllerBase
     private readonly AppDbContext _context;
     private readonly IHubContext<ChatHub> _hubContext;
     private readonly PushNotificationService _pushService;
+    private readonly ActivityLogService _log;
 
-    public ApplicationsController(AppDbContext context, IHubContext<ChatHub> hubContext, PushNotificationService pushService)
+    public ApplicationsController(AppDbContext context, IHubContext<ChatHub> hubContext, PushNotificationService pushService, ActivityLogService log)
     {
+        _log = log;
         _context = context;
         _hubContext = hubContext;
         _pushService = pushService;
@@ -236,8 +238,23 @@ public class ApplicationsController : ControllerBase
         if (app == null) return NotFound();
         if (!IsAdmin() && app.JobOffer.CreatedByUserId != GetUserId()) return Forbid();
 
+        // La suppression par le recruteur n'ecrivait rien au journal, alors
+        // que celle de l'administration le fait. Une candidature pouvait
+        // donc disparaitre definitivement sans qu'aucune trace n'en
+        // subsiste : ni qui l'a supprimee, ni quand, ni pour quelle offre.
+        // Sur une plateforme de recrutement, l'effacement du dossier de
+        // quelqu'un est precisement ce qui doit se raconter apres coup.
+        var nom = app.FullName;
+        var offre = app.JobOffer?.Title ?? $"offre #{app.JobOfferId}";
+
         _context.Applications.Remove(app);
         await _context.SaveChangesAsync();
+
+        await _log.Log("DeleteApplication", "Application", id,
+            $"Candidature de {nom} supprimée — {offre}",
+            GetUserId(), $"{User.FindFirstValue(ClaimTypes.GivenName)} {User.FindFirstValue(ClaimTypes.Surname)}".Trim(),
+            HttpContext.Connection.RemoteIpAddress?.ToString());
+
         return NoContent();
     }
 
