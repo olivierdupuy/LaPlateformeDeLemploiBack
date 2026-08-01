@@ -314,8 +314,31 @@ public class NewsletterService
     private static string Jeton() =>
         Convert.ToHexString(RandomNumberGenerator.GetBytes(24)).ToLowerInvariant();
 
+    /// <summary>
+    /// Une adresse acceptable.
+    ///
+    /// La regle precedente n'excluait que l'arobase et les espaces. Elle
+    /// laissait donc entrer « &lt;img/src=x/onerror=…&gt;@evil.fr » : une
+    /// adresse au regard de l'expression, une charge active des qu'un
+    /// ecran la reaffiche. Le formulaire d'abonnement etant ouvert a
+    /// n'importe qui, cela donnait a un inconnu le moyen de faire executer
+    /// du code dans la console d'un administrateur — le compte le mieux
+    /// protege du site, et le plus interessant a prendre.
+    ///
+    /// On s'en tient donc aux caracteres qu'une adresse porte reellement.
+    /// Aucune adresse legitime n'est perdue : les chevrons, guillemets et
+    /// apostrophes n'y figurent que dans des formes que ni Brevo ni Gandi
+    /// n'accepteraient de toute facon.
+    ///
+    /// Cela ne dispense pas d'echapper a l'affichage — une base peut avoir
+    /// ete remplie avant cette regle, et une seule barriere n'en est pas
+    /// une.
+    /// </summary>
     public static bool EstUneAdresse(string? e) =>
-        !string.IsNullOrWhiteSpace(e) && Regex.IsMatch(e, @"^[^@\s]+@[^@\s]+\.[^@\s]{2,}$");
+        !string.IsNullOrWhiteSpace(e)
+        && e.Length <= 254
+        && Regex.IsMatch(e, @"^[A-Za-z0-9!#$%&'*+/=?^_`{|}~.\-]+@[A-Za-z0-9](?:[A-Za-z0-9\-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9\-]*[A-Za-z0-9])?)*\.[A-Za-z]{2,}$")
+        && !e.Contains("..");
 
     /// <summary>« 34 - Montpellier » rend « 34 ». La Corse compte double : 2A, 2B.</summary>
     public static string? Departement(string? ville)
