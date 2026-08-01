@@ -236,11 +236,45 @@ public class CompanyReviewsController : ControllerBase
         };
     }
 
+    /// <summary>
+    /// Ecrire la fiche de SON entreprise.
+    ///
+    /// Le role ne suffisait pas : « Recruiter » ouvrait la fiche de
+    /// n'importe quelle societe, pas seulement la sienne. Un recruteur
+    /// pouvait donc reecrire la presentation d'un concurrent, ou la
+    /// vider — et rien ne l'en empechait, alors meme que cette fiche
+    /// s'affiche sur chacune de ses offres et sur sa page publique.
+    ///
+    /// L'appartenance se juge sur le nom declare au compte, insensible
+    /// a la casse et aux espaces de bord : c'est la meme cle qui sert a
+    /// enregistrer la fiche, et deux ecritures differentes du meme nom
+    /// designent deja deux fiches distinctes.
+    ///
+    /// Un compte sans entreprise declaree n'ecrit rien : il n'y a pas
+    /// de fiche dont il puisse repondre.
+    /// </summary>
     [HttpPut("{company}/profile")]
     [Authorize(Roles = "Admin,Recruiter")]
     public async Task<IActionResult> UpsertProfile(string company, CompanyProfileDto dto)
     {
         var name = Uri.UnescapeDataString(company);
+
+        if (!User.IsInRole("Admin"))
+        {
+            var userId = GetUserId();
+            var sienne = userId == null ? null : await _context.Users
+                .Where(u => u.Id == userId)
+                .Select(u => u.Company)
+                .FirstOrDefaultAsync();
+
+            if (string.IsNullOrWhiteSpace(sienne))
+                return BadRequest(new { message = "Renseignez d'abord le nom de votre entreprise dans votre profil." });
+
+            if (!string.Equals(sienne.Trim(), name.Trim(), StringComparison.OrdinalIgnoreCase))
+                return StatusCode(StatusCodes.Status403Forbidden,
+                    new { message = "Cette fiche appartient à une autre entreprise que la vôtre." });
+        }
+
         var p = await _context.CompanyProfiles.FirstOrDefaultAsync(x => x.Company == name);
         if (p == null)
         {
