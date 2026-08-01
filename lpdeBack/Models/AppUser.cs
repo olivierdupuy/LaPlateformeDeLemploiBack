@@ -53,4 +53,22 @@ public class AppUser : IdentityUser
 
     /// <summary>Le candidat accepte d'apparaitre dans le vivier / d'etre trouve par les recruteurs.</summary>
     public bool IsSearchable { get; set; } = true;
+
+    // ══ Securite ══
+    // IdentityUser porte deja TwoFactorEnabled, EmailConfirmed, LockoutEnd,
+    // AccessFailedCount et SecurityStamp. Ce qui manque, ce sont les dates :
+    // « la double authentification est active » ne dit pas depuis quand, et
+    // c'est cette date qu'on cherche quand on enquete sur un compte.
+
+    /// <summary>Depuis quand la double authentification protege ce compte.</summary>
+    public DateTime? TwoFactorEnabledAt { get; set; }
+
+    /// <summary>Dernier changement de mot de passe : un mot de passe qui n'a jamais bouge est un fait.</summary>
+    public DateTime? LastPasswordChangedAt { get; set; }
+
+    /// <summary>
+    /// Derniere connexion reussie. Elle se deduisait du journal d'activite,
+    /// au prix d'une requete d'agregation par fiche consultee.
+    /// </summary>
+    public DateTime? LastLoginAt { get; set; }
 }

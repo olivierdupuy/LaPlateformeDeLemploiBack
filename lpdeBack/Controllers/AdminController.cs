@@ -459,7 +459,7 @@ public class AdminController : ControllerBase
 
     [HttpPost("users/{id}/impersonate")]
     public async Task<ActionResult<object>> Impersonate(string id,
-        [FromServices] IConfiguration config, CancellationToken ct)
+        [FromServices] SessionService sessions, CancellationToken ct)
     {
         var cible = await _context.Users.FirstOrDefaultAsync(u => u.Id == id, ct);
         if (cible == null) return NotFound();
@@ -474,7 +474,19 @@ public class AdminController : ControllerBase
         if (cible.Id == adminId)
             return BadRequest(new { message = "Vous etes deja sur votre propre compte." });
 
-        var jeton = ConstruireJetonEmprunt(cible, adminId, UserFullName(), config);
+        // L'emprunt passe par le service des sessions comme n'importe quelle
+        // connexion : le jeton porte un jti, s'inscrit dans la liste des
+        // appareils, et se coupe. Sans cela il echapperait a la revocation
+        // — et c'est precisement le jeton qui devrait pouvoir etre coupe le
+        // plus vite.
+        var (jeton, finEmprunt) = await sessions.Ouvrir(
+            cible, "Impersonation", HttpContext,
+            TimeSpan.FromMinutes(DureeEmpruntMinutes),
+            new[]
+            {
+                new Claim("impersonator_id", adminId),
+                new Claim("impersonator_name", UserFullName()),
+            });
 
         await _log.Log("ImpersonateStart", "User", null,
             $"Prise en main du compte {cible.Email} ({cible.Role})",
@@ -483,7 +495,7 @@ public class AdminController : ControllerBase
         return Ok(new
         {
             token = jeton,
-            expiration = DateTime.UtcNow.AddMinutes(DureeEmpruntMinutes),
+            expiration = finEmprunt,
             user = new
             {
                 cible.Id, cible.Email, cible.FirstName, cible.LastName, cible.Role,
@@ -511,7 +523,7 @@ public class AdminController : ControllerBase
     [AllowAnonymous]
     public async Task<ActionResult<object>> StopImpersonation(
         [FromServices] UserManager<AppUser> users,
-        [FromServices] IConfiguration config, CancellationToken ct)
+        [FromServices] SessionService sessions, CancellationToken ct)
     {
         var adminId = User.FindFirstValue("impersonator_id");
         if (string.IsNullOrEmpty(adminId))
@@ -521,6 +533,22 @@ public class AdminController : ControllerBase
         if (admin == null || admin.Role != "Admin")
             return Unauthorized(new { message = "Administrateur d'origine introuvable." });
 
+        // L'emprunt se ferme au lieu de courir jusqu'a sa demi-heure : rendre
+        // la main doit vraiment la rendre.
+        var jtiEmprunt = User.FindFirstValue(JwtRegisteredClaimNames.Jti);
+        if (jtiEmprunt != null)
+        {
+            var session = await _context.UserSessions.FirstOrDefaultAsync(s => s.Jti == jtiEmprunt, ct);
+            if (session != null)
+            {
+                session.RevokedAt = DateTime.UtcNow;
+                session.RevokedReason = "Fin de la prise en main";
+                await _context.SaveChangesAsync(ct);
+            }
+        }
+
+        var (jetonAdmin, _) = await sessions.Ouvrir(admin, "Password", HttpContext, TimeSpan.FromHours(8));
+
         var emprunte = User.FindFirstValue(ClaimTypes.Email);
         await _log.Log("ImpersonateStop", "User", null,
             $"Fin de la prise en main du compte {emprunte}",
@@ -528,7 +556,7 @@ public class AdminController : ControllerBase
 
         return Ok(new
         {
-            token = ConstruireJetonStandard(admin, config),
+            token = jetonAdmin,
             user = new
             {
                 admin.Id, admin.Email, admin.FirstName, admin.LastName, admin.Role,
@@ -539,45 +567,11 @@ public class AdminController : ControllerBase
 
     private const int DureeEmpruntMinutes = 30;
 
-    private static string ConstruireJetonEmprunt(AppUser cible, string adminId,
-                                                 string adminNom, IConfiguration config)
-    {
-        var claims = ClaimsDeBase(cible);
-        // Les deux identites voyagent ensemble : c'est ce qui permet au
-        // journal de nommer l'auteur reel d'une action.
-        claims.Add(new Claim("impersonator_id", adminId));
-        claims.Add(new Claim("impersonator_name", adminNom));
-        return Signer(claims, config, DateTime.UtcNow.AddMinutes(DureeEmpruntMinutes));
-    }
-
-    private static string ConstruireJetonStandard(AppUser u, IConfiguration config)
-        => Signer(ClaimsDeBase(u), config, DateTime.UtcNow.AddHours(8));
-
-    private static List<Claim> ClaimsDeBase(AppUser u) => new()
-    {
-        new Claim(ClaimTypes.NameIdentifier, u.Id),
-        new Claim(ClaimTypes.Email, u.Email ?? string.Empty),
-        new Claim(ClaimTypes.GivenName, u.FirstName ?? string.Empty),
-        new Claim(ClaimTypes.Surname, u.LastName ?? string.Empty),
-        new Claim(ClaimTypes.Role, u.Role),
-    };
-
-    private static string Signer(IEnumerable<Claim> claims, IConfiguration config, DateTime expire)
-    {
-        var cle = config["Jwt:Key"] ?? "CleParDefautDeDeveloppementUniquement_32Caracteres!";
-        var creds = new SigningCredentials(
-            new SymmetricSecurityKey(Encoding.UTF8.GetBytes(cle)),
-            SecurityAlgorithms.HmacSha256);
-
-        var jeton = new JwtSecurityToken(
-            issuer: config["Jwt:Issuer"] ?? "LpdeBack",
-            audience: config["Jwt:Audience"] ?? "LpdeFront",
-            claims: claims,
-            expires: expire,
-            signingCredentials: creds);
-
-        return new JwtSecurityTokenHandler().WriteToken(jeton);
-    }
+    // Les trois fabriques de jetons qui vivaient ici ont disparu : elles
+    // signaient sans jti ni tampon, donc sans possibilite de revocation, et
+    // la derniere se rabattait sur une cle par defaut ecrite en clair — le
+    // repli meme que Program.cs refuse au demarrage. Tout passe desormais
+    // par SessionService.
 
     // ═══════════════════════════════════
     //  4 ter. EXPLORATEURS PAGINES
@@ -885,6 +879,12 @@ public class AdminController : ControllerBase
             u.Id, u.Email, u.FirstName, u.LastName, u.Role, u.Company,
             u.AvatarUrl, u.City, u.Title, u.CreatedAt, u.IsActive, u.IsSearchable,
             isOnline = ChatHub.IsUserOnline(u.Id),
+            // Un administrateur sans second facteur est le maillon faible de
+            // toute la plateforme : cela se voit depuis la liste, sans avoir
+            // a ouvrir les fiches une par une.
+            u.TwoFactorEnabled,
+            u.EmailConfirmed,
+            verrouille = u.LockoutEnd != null && u.LockoutEnd > DateTimeOffset.UtcNow,
         });
 
         facets.Online = ChatHub.GetOnlineUserIds().Count();
@@ -1169,8 +1169,28 @@ public class AdminController : ControllerBase
                 user.Skills, user.ExperienceYears, user.Education, user.City,
                 user.LinkedInUrl, user.PortfolioUrl, user.IsSearchable, user.IsActive,
                 user.CreatedAt, user.PhoneNumber, user.EmailConfirmed,
-                lastLoginAt = derniereConnexion,
+                lastLoginAt = user.LastLoginAt ?? derniereConnexion,
                 loginsLast30Days = connexions30j,
+            },
+
+            // Ce que vaut la protection de ce compte. Une fiche qui parle de
+            // suspendre et de prendre la main sans dire si le compte est
+            // protege par un second facteur passe a cote de la question.
+            securite = new
+            {
+                deuxFacteurs = user.TwoFactorEnabled,
+                deuxFacteursDepuis = user.TwoFactorEnabledAt,
+                deuxFacteursObligatoire = user.Role == "Admin",
+                emailConfirme = user.EmailConfirmed,
+                motDePasseModifieLe = user.LastPasswordChangedAt,
+                verrouilleJusquA = user.LockoutEnd,
+                echecs = user.AccessFailedCount,
+                sessions = await _context.UserSessions
+                    .Where(s => s.UserId == id && s.RevokedAt == null && s.ExpiresAt > DateTime.UtcNow)
+                    .OrderByDescending(s => s.LastSeenAt)
+                    .Take(20)
+                    .Select(s => new { s.Id, s.Device, s.IpAddress, s.CreatedAt, s.LastSeenAt, s.Method })
+                    .ToListAsync(),
             },
             applications,
             savedSearches,
@@ -1249,10 +1269,127 @@ public class AdminController : ControllerBase
         if (!result.Succeeded)
             return BadRequest(new { message = string.Join(" ", result.Errors.Select(e => e.Description)) });
 
+        // Un mot de passe qu'on reinitialise l'est presque toujours parce
+        // qu'on soupconne l'ancien : laisser les sessions ouvertes rendrait
+        // le geste vain. Identity a deja renouvele le tampon de securite, ce
+        // qui coupe les jetons ; on ferme les sessions pour que la liste
+        // d'appareils le dise aussi.
+        var sessions = HttpContext.RequestServices.GetRequiredService<SessionService>();
+        await sessions.RevoquerToutes(user.Id, "Mot de passe reinitialise par l'administration");
+
         await _log.Log("ResetPassword", "User", null,
             $"Mot de passe de {user.Email} réinitialisé", UserId(), UserFullName(), Ip());
 
-        return Ok(new { message = "Mot de passe reinitialise" });
+        return Ok(new { message = "Mot de passe réinitialisé. Tous les appareils ont été déconnectés." });
+    }
+
+    // ═══════════════════════════════════
+    //  4 quater. SECURITE D'UN COMPTE
+    //
+    //  L'administration n'a ici que les pouvoirs qu'elle ne peut pas ne pas
+    //  avoir : deverrouiller quelqu'un que le compteur d'echecs a enferme
+    //  dehors, et couper la double authentification de qui a perdu a la fois
+    //  son telephone et ses codes de secours. Les deux laissent une trace
+    //  nominative — ce sont precisement les gestes dont on veut pouvoir dire
+    //  plus tard qui les a faits.
+    // ═══════════════════════════════════
+
+    /// <summary>Deverrouille un compte bloque par le compteur de tentatives.</summary>
+    [HttpPost("users/{id}/deverrouiller")]
+    public async Task<IActionResult> Deverrouiller(string id)
+    {
+        var user = await _userManager.FindByIdAsync(id);
+        if (user == null) return NotFound();
+
+        await _userManager.SetLockoutEndDateAsync(user, null);
+        await _userManager.ResetAccessFailedCountAsync(user);
+
+        await _log.Log("Deverrouillage", "User", null,
+            $"Compte {user.Email} deverrouille", UserId(), UserFullName(), Ip());
+
+        return Ok(new { message = "Compte déverrouillé." });
+    }
+
+    /// <summary>
+    /// Coupe la double authentification d'un compte. Recours de derniere
+    /// extremite : la personne a perdu son telephone et ses codes de secours,
+    /// et sans cela son compte serait definitivement clos.
+    /// </summary>
+    [HttpPost("users/{id}/2fa/desactiver")]
+    public async Task<IActionResult> DesactiverDeuxFacteurs(string id)
+    {
+        var user = await _userManager.FindByIdAsync(id);
+        if (user == null) return NotFound();
+
+        if (!await _userManager.GetTwoFactorEnabledAsync(user))
+            return BadRequest(new { message = "La double authentification n'est pas active sur ce compte." });
+
+        await _userManager.SetTwoFactorEnabledAsync(user, false);
+        await _userManager.ResetAuthenticatorKeyAsync(user);
+        user.TwoFactorEnabledAt = null;
+        await _userManager.UpdateAsync(user);
+
+        var mail = HttpContext.RequestServices.GetRequiredService<IEmailSender>();
+        var site = (HttpContext.RequestServices.GetRequiredService<IConfiguration>()["App:PublicUrl"] ?? "").TrimEnd('/');
+        await mail.Envoyer(ModelesCourriel.DoubleAuthentification(user.Email!, user.FirstName, false, $"{site}/securite"));
+
+        await _log.Log("2faDesactiveeParAdmin", "User", null,
+            $"Double authentification de {user.Email} desactivee par l'administration",
+            UserId(), UserFullName(), Ip());
+
+        return Ok(new { message = "Double authentification désactivée. La personne en a été informée par courriel." });
+    }
+
+    /// <summary>Ferme tous les appareils connectes d'un compte.</summary>
+    [HttpPost("users/{id}/sessions/tout-fermer")]
+    public async Task<ActionResult<object>> FermerSessions(string id, [FromServices] SessionService sessions)
+    {
+        var user = await _userManager.FindByIdAsync(id);
+        if (user == null) return NotFound();
+
+        var n = await sessions.RevoquerToutes(id, "Deconnexion demandee par l'administration");
+        await _log.Log("SessionsFermees", "User", null,
+            $"{n} session(s) de {user.Email} fermee(s)", UserId(), UserFullName(), Ip());
+
+        return Ok(new { fermees = n, message = n == 0 ? "Aucun appareil n'était connecté." : $"{n} appareil(s) deconnecte(s)." });
+    }
+
+    // ═══════════════════════════════════
+    //  4 quinquies. EXPEDITION DE COURRIEL
+    // ═══════════════════════════════════
+
+    /// <summary>
+    /// Ce que la plateforme sait de son serveur d'expedition. Aucun secret
+    /// n'en sort : l'hote et l'expediteur suffisent a diagnostiquer, le mot
+    /// de passe n'aiderait personne.
+    /// </summary>
+    [HttpGet("email/etat")]
+    public ActionResult<object> EtatCourriel([FromServices] IEmailSender mail)
+        => Ok(new
+        {
+            configure = mail.EstConfigure,
+            etat = mail.Etat,
+            consequence = mail.EstConfigure
+                ? "Les mots de passe oubliés, les confirmations d'adresse et les alertes de connexion partent normalement."
+                : "Aucun message ne part. « Mot de passe oublié » n'aboutit pas, les adresses ne se confirment pas, et les alertes de connexion sont écrites dans le journal du serveur au lieu d'être envoyées.",
+        });
+
+    /// <summary>Envoie un message de controle a l'adresse demandee.</summary>
+    [HttpPost("email/essai")]
+    public async Task<ActionResult<object>> EssaiCourriel([FromServices] IEmailSender mail, [FromBody] EssaiCourrielDto dto)
+    {
+        var destinataire = string.IsNullOrWhiteSpace(dto?.Email) ? User.FindFirstValue(ClaimTypes.Email) : dto!.Email;
+        if (string.IsNullOrWhiteSpace(destinataire))
+            return BadRequest(new { message = "Aucune adresse de destination." });
+
+        var parti = await mail.Envoyer(ModelesCourriel.Essai(destinataire));
+        return Ok(new
+        {
+            parti,
+            message = parti
+                ? $"Message expedie a {destinataire}. S'il n'arrive pas, regardez les indésirables avant de soupçonner la configuration."
+                : "Rien n'est parti : aucun serveur n'est configuré, ou il a refusé la connexion. Le détail se trouve dans le journal du serveur.",
+        });
     }
 
     // ═══════════════════════════════════
@@ -1461,4 +1598,10 @@ public class SettingUpdateDto
     public string Value { get; set; } = string.Empty;
     public string? Type { get; set; }
     public string? Description { get; set; }
+}
+
+public class EssaiCourrielDto
+{
+    /// <summary>Vide, le message part a l'adresse de l'administrateur connecte.</summary>
+    public string? Email { get; set; }
 }

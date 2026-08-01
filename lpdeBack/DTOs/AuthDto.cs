@@ -91,6 +91,18 @@ public class AuthResponseDto
     public string Token { get; set; } = string.Empty;
     public DateTime Expiration { get; set; }
     public UserDto User { get; set; } = null!;
+
+    // ── Connexion en deux temps ──
+    // Quand la double authentification protege le compte, le mot de passe
+    // juste ne donne plus de jeton de session : il donne un jeton de defi,
+    // qui ne vaut que le temps de saisir un code. Token reste alors vide —
+    // c'est la seule facon pour le client de ne pas croire qu'il est entre.
+
+    /// <summary>Un code a six chiffres est attendu avant d'ouvrir la session.</summary>
+    public bool RequiresTwoFactor { get; set; }
+
+    /// <summary>Le jeton de defi, valable cinq minutes, sans aucun autre pouvoir.</summary>
+    public string? ChallengeToken { get; set; }
 }
 
 public class UserDto
@@ -114,4 +126,49 @@ public class UserDto
     public bool IsSearchable { get; set; }
     public DateTime CreatedAt { get; set; }
     public bool IsOnline { get; set; }
+
+    // ── Securite ──
+    // Portees jusqu'au client parce que l'interface s'en sert : un bandeau
+    // rappelle l'adresse non confirmee, et un administrateur sans double
+    // authentification est conduit a l'activer avant d'entrer.
+    public bool EmailConfirmed { get; set; }
+    public bool TwoFactorEnabled { get; set; }
+}
+
+// ── Recuperation et confirmation ──
+
+public class MotDePasseOublieDto
+{
+    public string Email { get; set; } = string.Empty;
+}
+
+public class ReinitialisationDto
+{
+    public string UserId { get; set; } = string.Empty;
+    public string Jeton { get; set; } = string.Empty;
+    public string NouveauMotDePasse { get; set; } = string.Empty;
+}
+
+public class ConfirmationEmailDto
+{
+    public string UserId { get; set; } = string.Empty;
+    public string Jeton { get; set; } = string.Empty;
+}
+
+public class DefiDeuxFacteursDto
+{
+    /// <summary>Le jeton rendu par la connexion, qui ne vaut que pour cette etape.</summary>
+    public string ChallengeToken { get; set; } = string.Empty;
+
+    /// <summary>Le code de l'application, ou l'un des codes de secours.</summary>
+    public string Code { get; set; } = string.Empty;
+}
+
+public class LinkedInDto
+{
+    /// <summary>Le code d'autorisation rendu par LinkedIn a la redirection.</summary>
+    public string Code { get; set; } = string.Empty;
+
+    /// <summary>L'URL de redirection utilisee, que LinkedIn revalide a l'echange.</summary>
+    public string RedirectUri { get; set; } = string.Empty;
 }

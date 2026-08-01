@@ -29,6 +29,7 @@ public class AppDbContext : IdentityDbContext<AppUser>
     public DbSet<CompanyFollow> CompanyFollows => Set<CompanyFollow>();
     public DbSet<CompanyProfile> CompanyProfiles => Set<CompanyProfile>();
     public DbSet<JobEvent> JobEvents => Set<JobEvent>();
+    public DbSet<UserSession> UserSessions => Set<UserSession>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -60,6 +61,16 @@ public class AppDbContext : IdentityDbContext<AppUser>
             entity.HasOne(a => a.JobOffer).WithMany(j => j.Applications).HasForeignKey(a => a.JobOfferId).OnDelete(DeleteBehavior.Cascade);
             entity.HasOne(a => a.User).WithMany().HasForeignKey(a => a.UserId).OnDelete(DeleteBehavior.SetNull);
             entity.HasIndex(a => a.Email);
+        });
+
+        modelBuilder.Entity<UserSession>(entity =>
+        {
+            entity.HasOne(s => s.User).WithMany().HasForeignKey(s => s.UserId).OnDelete(DeleteBehavior.Cascade);
+            // Chaque requete authentifiee cherche la session par son jti :
+            // sans index unique, la verification couterait un balayage de
+            // table a chaque appel.
+            entity.HasIndex(s => s.Jti).IsUnique();
+            entity.HasIndex(s => new { s.UserId, s.RevokedAt });
         });
 
         modelBuilder.Entity<Notification>(entity =>

@@ -3,6 +3,8 @@ using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
+using System.IdentityModel.Tokens.Jwt;
+using System.Security.Claims;
 using System.Text;
 using FirebaseAdmin;
 using Google.Apis.Auth.OAuth2;
@@ -35,15 +37,44 @@ builder.Services.AddDbContext<AppDbContext>(options =>
 
 builder.Services.AddIdentity<AppUser, IdentityRole>(options =>
 {
+    // ── Mot de passe ──
+    // Les classes de caracteres obligatoires produisent « Password1! » : le
+    // meme mot de passe que tout le monde, avec les memes substitutions.
+    // C'est la longueur qui resiste, et le NIST a cesse depuis 2017 de
+    // recommander l'inverse. On exige donc huit caracteres et quatre
+    // distincts — de quoi ecarter « aaaaaaaa » — et rien d'autre.
     options.Password.RequireDigit = false;
     options.Password.RequireLowercase = false;
     options.Password.RequireUppercase = false;
     options.Password.RequireNonAlphanumeric = false;
-    options.Password.RequiredLength = 6;
+    options.Password.RequiredLength = 8;
+    options.Password.RequiredUniqueChars = 4;
+
     options.User.RequireUniqueEmail = true;
+
+    // ── Verrouillage ──
+    // CheckPasswordSignInAsync etait appele avec lockoutOnFailure: false :
+    // un robot pouvait essayer des mots de passe indefiniment, sans que rien
+    // ne ralentisse ni ne compte. Cinq essais donnent le droit a l'erreur,
+    // quinze minutes rendent l'attaque par force brute sans objet.
+    options.Lockout.MaxFailedAccessAttempts = 5;
+    options.Lockout.DefaultLockoutTimeSpan = TimeSpan.FromMinutes(15);
+    options.Lockout.AllowedForNewUsers = true;
+
+    // La confirmation d'adresse n'interdit pas la connexion : elle
+    // conditionne les envois et la recuperation du mot de passe. Bloquer
+    // l'entree enfermerait dehors tous les comptes crees avant qu'un
+    // serveur de courriel n'existe.
+    options.SignIn.RequireConfirmedEmail = false;
 })
 .AddEntityFrameworkStores<AppDbContext>()
 .AddDefaultTokenProviders();
+
+// Le jeton de reinitialisation vaut par defaut un jour entier. Un lien qui
+// ouvre un compte n'a pas a survivre une nuit : trente minutes suffisent a
+// relever sa boite et a cliquer.
+builder.Services.Configure<DataProtectionTokenProviderOptions>(o =>
+    o.TokenLifespan = TimeSpan.FromMinutes(30));
 
 // ── Cle de signature JWT ──
 // Aucun repli : une valeur par defaut ici restaurerait silencieusement une cle
@@ -95,7 +126,84 @@ builder.Services.AddAuthentication(options =>
                 context.Token = accessToken;
             }
             return Task.CompletedTask;
-        }
+        },
+
+        // ── Le jeton signe ne suffit plus ──
+        // Une signature valide prouve que nous avons emis ce jeton ; elle ne
+        // dit pas qu'il vaut encore. Suspendre un compte, changer un mot de
+        // passe, couper une session ou desactiver la double authentification
+        // ne fermaient donc rien avant l'expiration, sept jours plus tard.
+        //
+        // Deux verifications le rendent revocable : la session que ce jeton
+        // designe existe-t-elle encore, et le tampon de securite du compte
+        // est-il toujours celui qu'il porte ? Identity change ce tampon de
+        // lui-meme des que le mot de passe ou la double authentification
+        // bougent — un seul geste tue alors tous les jetons a la fois.
+        OnTokenValidated = async context =>
+        {
+            var principal = context.Principal;
+            if (principal == null) { context.Fail("Jeton illisible."); return; }
+
+            // Un jeton de defi franchit l'etape de double authentification et
+            // rien d'autre : il n'ouvre aucune page.
+            if (principal.FindFirst(lpdeBack.Services.SessionService.ClaimDefi) != null)
+            {
+                context.Fail("Ce jeton ne vaut que pour la double authentification.");
+                return;
+            }
+
+            var jti = principal.FindFirst(JwtRegisteredClaimNames.Jti)?.Value;
+            var userId = principal.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            if (string.IsNullOrEmpty(jti) || string.IsNullOrEmpty(userId))
+            {
+                context.Fail("Jeton incomplet.");
+                return;
+            }
+
+            var db = context.HttpContext.RequestServices.GetRequiredService<AppDbContext>();
+            var session = await db.UserSessions.FirstOrDefaultAsync(s => s.Jti == jti);
+
+            // Les jetons emis avant l'existence des sessions n'en ont pas.
+            // Les refuser deconnecterait tout le monde d'un coup au
+            // deploiement ; on les laisse vivre jusqu'a leur expiration
+            // naturelle, mais le tampon leur est quand meme oppose.
+            if (session != null)
+            {
+                if (session.RevokedAt != null)
+                {
+                    context.Fail("Session fermee.");
+                    return;
+                }
+
+                // Ecrire a chaque requete couterait plus cher que toute la
+                // verification : on ne rafraichit que par tranches.
+                if (DateTime.UtcNow - session.LastSeenAt > TimeSpan.FromMinutes(5))
+                {
+                    session.LastSeenAt = DateTime.UtcNow;
+                    await db.SaveChangesAsync();
+                }
+            }
+
+            var tamponJeton = principal.FindFirst(lpdeBack.Services.SessionService.ClaimTampon)?.Value;
+            if (tamponJeton != null)
+            {
+                var compte = await db.Users
+                    .Where(u => u.Id == userId)
+                    .Select(u => new { u.SecurityStamp, u.IsActive })
+                    .FirstOrDefaultAsync();
+
+                if (compte == null || !compte.IsActive)
+                {
+                    context.Fail("Compte indisponible.");
+                    return;
+                }
+                if (compte.SecurityStamp != tamponJeton)
+                {
+                    context.Fail("Jeton perime : les identifiants du compte ont change.");
+                    return;
+                }
+            }
+        },
     };
 });
 
@@ -105,6 +213,10 @@ builder.Services.AddHttpClient();
 builder.Services.AddSignalR();
 builder.Services.AddScoped<lpdeBack.Services.PushNotificationService>();
 builder.Services.AddScoped<lpdeBack.Services.ActivityLogService>();
+builder.Services.AddScoped<lpdeBack.Services.SessionService>();
+// Sans serveur configure, l'expediteur ecrit les messages au journal plutot
+// que de les perdre : on suit un flux complet en developpement, lien compris.
+builder.Services.AddSingleton<lpdeBack.Services.IEmailSender, lpdeBack.Services.EmailSender>();
 builder.Services.AddScoped<lpdeBack.Services.JobImportService>();
 // En singleton : le cache de jetons France Travail n'a d'interet que s'il
 // survit a la requete qui l'a rempli.

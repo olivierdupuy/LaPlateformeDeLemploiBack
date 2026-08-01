@@ -23,20 +23,32 @@ public class AuthController : ControllerBase
     private readonly IConfiguration _config;
     private readonly ActivityLogService _log;
     private readonly AppDbContext _context;
+    private readonly SessionService _sessions;
+    private readonly IEmailSender _mail;
+    private readonly IHttpClientFactory _http;
 
     public AuthController(
         UserManager<AppUser> userManager,
         SignInManager<AppUser> signInManager,
         IConfiguration config,
         ActivityLogService log,
-        AppDbContext context)
+        AppDbContext context,
+        SessionService sessions,
+        IEmailSender mail,
+        IHttpClientFactory http)
     {
         _userManager = userManager;
         _signInManager = signInManager;
         _config = config;
         _log = log;
         _context = context;
+        _sessions = sessions;
+        _mail = mail;
+        _http = http;
     }
+
+    private string SiteUrl => (_config["App:PublicUrl"] ?? "").TrimEnd('/');
+    private string? Ip() => SessionService.Ip(HttpContext);
 
     /// <summary>Register a new user</summary>
     [HttpPost("register")]
@@ -48,7 +60,7 @@ public class AuthController : ControllerBase
             .Select(s => s.Value)
             .FirstOrDefaultAsync();
         if (allowReg == "false")
-            return BadRequest(new { message = "Les inscriptions sont actuellement fermees. Veuillez reessayer plus tard." });
+            return BadRequest(new { message = "Les inscriptions sont actuellement fermées. Veuillez reessayer plus tard." });
 
         var existingUser = await _userManager.FindByEmailAsync(dto.Email);
         if (existingUser != null)
@@ -74,24 +86,220 @@ public class AuthController : ControllerBase
 
         await _userManager.AddToRoleAsync(user, dto.Role);
 
-        _ = _log.Log("Register", "User", null, $"Inscription: {user.FirstName} {user.LastName} ({dto.Role})", user.Id, $"{user.FirstName} {user.LastName}", HttpContext.Connection.RemoteIpAddress?.ToString());
-        return Ok(GenerateAuthResponse(user));
+        // La confirmation part tout de suite. Sans serveur configure, le
+        // message est ecrit au journal : l'inscription reussit quand meme,
+        // et l'interesse verra un bandeau l'invitant a la redemander.
+        await EnvoyerConfirmation(user);
+
+        await _log.Log("Register", "User", null, $"Inscription: {user.FirstName} {user.LastName} ({dto.Role})", user.Id, $"{user.FirstName} {user.LastName}", Ip());
+        return Ok(await Reponse(user, "Password"));
     }
 
-    /// <summary>Login with email and password</summary>
+    /// <summary>
+    /// Connexion par mot de passe.
+    ///
+    /// Elle se faisait avec « lockoutOnFailure: false » : rien ne comptait
+    /// les echecs, rien ne ralentissait, un robot pouvait essayer un
+    /// dictionnaire entier sur une adresse connue. Les echecs comptent
+    /// desormais, et cinq de suite ferment la porte un quart d'heure.
+    ///
+    /// Quand la double authentification protege le compte, le mot de passe
+    /// juste ne rend plus de jeton de session : il rend un defi de cinq
+    /// minutes, qui n'ouvre rien d'autre que l'ecran du code.
+    /// </summary>
     [HttpPost("login")]
     public async Task<ActionResult<AuthResponseDto>> Login(LoginDto dto)
     {
         var user = await _userManager.FindByEmailAsync(dto.Email);
+
+        // Le compte suspendu ne se distingue pas d'un mot de passe faux :
+        // dire « ce compte est suspendu » confirmerait son existence a qui
+        // ne fait que deviner des adresses.
         if (user == null || !user.IsActive)
             return Unauthorized(new { message = "Email ou mot de passe incorrect." });
 
-        var result = await _signInManager.CheckPasswordSignInAsync(user, dto.Password, lockoutOnFailure: false);
-        if (!result.Succeeded)
-            return Unauthorized(new { message = "Email ou mot de passe incorrect." });
+        if (await _userManager.IsLockedOutAsync(user))
+            return StatusCode(StatusCodes.Status423Locked, new
+            {
+                message = "Trop de tentatives : ce compte est bloqué quinze minutes. Passez par « mot de passe oublié » si vous ne le retrouvez pas.",
+                verrouilleJusquA = user.LockoutEnd,
+            });
 
-        _ = _log.Log("Login", "User", null, $"Connexion: {user.FirstName} {user.LastName}", user.Id, $"{user.FirstName} {user.LastName}", HttpContext.Connection.RemoteIpAddress?.ToString());
-        return Ok(GenerateAuthResponse(user));
+        var result = await _signInManager.CheckPasswordSignInAsync(user, dto.Password, lockoutOnFailure: true);
+
+        if (result.IsLockedOut)
+            return StatusCode(StatusCodes.Status423Locked, new
+            {
+                message = "Trop de tentatives : ce compte est bloqué quinze minutes. Passez par « mot de passe oublié » si vous ne le retrouvez pas.",
+                verrouilleJusquA = user.LockoutEnd,
+            });
+
+        if (!result.Succeeded)
+        {
+            var restants = _userManager.Options.Lockout.MaxFailedAccessAttempts - user.AccessFailedCount;
+            return Unauthorized(new
+            {
+                message = restants is > 0 and <= 2
+                    ? $"Email ou mot de passe incorrect. Encore {restants} tentative{(restants > 1 ? "s" : "")} avant blocage."
+                    : "Email ou mot de passe incorrect.",
+            });
+        }
+
+        if (await _userManager.GetTwoFactorEnabledAsync(user))
+        {
+            return Ok(new AuthResponseDto
+            {
+                RequiresTwoFactor = true,
+                ChallengeToken = _sessions.OuvrirDefi(user),
+                User = MapToUserDto(user),
+            });
+        }
+
+        return Ok(await Reponse(user, "Password"));
+    }
+
+    /// <summary>
+    /// Deuxieme temps de la connexion : le code.
+    ///
+    /// Un code de secours est accepte au meme titre que celui de
+    /// l'application — c'est exactement le cas du telephone perdu — mais il
+    /// est consomme, et l'interesse en est averti pour qu'il sache combien
+    /// il lui en reste.
+    /// </summary>
+    [HttpPost("2fa/verifier")]
+    public async Task<ActionResult<AuthResponseDto>> VerifierDeuxFacteurs(DefiDeuxFacteursDto dto)
+    {
+        var userId = _sessions.LireDefi(dto.ChallengeToken);
+        if (userId == null)
+            return Unauthorized(new { message = "Cette demande a expiré. Reprenez la connexion depuis le début." });
+
+        var user = await _userManager.FindByIdAsync(userId);
+        if (user == null || !user.IsActive)
+            return Unauthorized(new { message = "Compte indisponible." });
+
+        if (await _userManager.IsLockedOutAsync(user))
+            return StatusCode(StatusCodes.Status423Locked, new { message = "Trop de tentatives : ce compte est bloqué quinze minutes." });
+
+        var parApplication = await _userManager.VerifyTwoFactorTokenAsync(
+            user, _userManager.Options.Tokens.AuthenticatorTokenProvider,
+            SessionService.CodeApplication(dto.Code));
+
+        var parSecours = false;
+        if (!parApplication)
+            parSecours = (await _userManager.RedeemTwoFactorRecoveryCodeAsync(
+                user, SessionService.CodeDeSecours(dto.Code))).Succeeded;
+
+        if (!parApplication && !parSecours)
+        {
+            // Un code faux compte comme un mot de passe faux : sans cela, le
+            // second facteur serait le seul endroit ou l'on peut essayer un
+            // million de combinaisons a six chiffres sans etre inquiete.
+            await _userManager.AccessFailedAsync(user);
+            return Unauthorized(new { message = "Code invalide. Saisissez le code affiché par votre application, ou l'un de vos codes de secours." });
+        }
+
+        await _userManager.ResetAccessFailedCountAsync(user);
+        var reponse = await Reponse(user, parSecours ? "Recovery" : "Password");
+
+        if (parSecours)
+        {
+            var restants = await _userManager.CountRecoveryCodesAsync(user);
+            await _log.Log("CodeDeSecoursUtilise", "User", null,
+                $"Connexion par code de secours ({restants} restants)", user.Id,
+                $"{user.FirstName} {user.LastName}", Ip());
+        }
+
+        return Ok(reponse);
+    }
+
+    // ═══════════════════════════════════════════
+    //  MOT DE PASSE OUBLIE
+    // ═══════════════════════════════════════════
+
+    /// <summary>
+    /// Demande de reinitialisation.
+    ///
+    /// La reponse est la meme que le compte existe ou non. Repondre « aucun
+    /// compte a cette adresse » offrirait a n'importe qui la liste des
+    /// adresses inscrites, une par essai.
+    /// </summary>
+    [HttpPost("mot-de-passe-oublie")]
+    public async Task<IActionResult> MotDePasseOublie(MotDePasseOublieDto dto)
+    {
+        var user = await _userManager.FindByEmailAsync(dto.Email ?? "");
+
+        if (user != null && user.IsActive)
+        {
+            var jeton = await _userManager.GeneratePasswordResetTokenAsync(user);
+            var lien = $"{SiteUrl}/reinitialiser-mot-de-passe" +
+                       $"?id={Uri.EscapeDataString(user.Id)}&jeton={Uri.EscapeDataString(jeton)}";
+
+            await _mail.Envoyer(ModelesCourriel.Reinitialisation(user.Email!, user.FirstName, lien, 30));
+            await _log.Log("MotDePasseOublie", "User", null, "Demande de reinitialisation", user.Id,
+                         $"{user.FirstName} {user.LastName}", Ip());
+        }
+
+        return Ok(new
+        {
+            message = "Si un compte existe à cette adresse, un message vient de partir. Le lien qu'il contient reste valable trente minutes.",
+        });
+    }
+
+    /// <summary>Fin du parcours : le nouveau mot de passe, et toutes les sessions coupees.</summary>
+    [HttpPost("reinitialiser-mot-de-passe")]
+    public async Task<IActionResult> ReinitialiserMotDePasse(ReinitialisationDto dto)
+    {
+        var user = await _userManager.FindByIdAsync(dto.UserId ?? "");
+        if (user == null)
+            return BadRequest(new { message = "Ce lien n'est plus valable. Demandez-en un nouveau." });
+
+        var resultat = await _userManager.ResetPasswordAsync(user, dto.Jeton ?? "", dto.NouveauMotDePasse ?? "");
+        if (!resultat.Succeeded)
+        {
+            var expire = resultat.Errors.Any(e => e.Code == "InvalidToken");
+            return BadRequest(new
+            {
+                message = expire
+                    ? "Ce lien a expiré ou a déjà servi. Demandez-en un nouveau."
+                    : string.Join(" ", resultat.Errors.Select(e => e.Description)),
+            });
+        }
+
+        // Une reinitialisation sert le plus souvent a reprendre un compte
+        // qu'on croit visite : laisser les sessions ouvertes reviendrait a
+        // changer la serrure sans reprendre les cles.
+        user.LastPasswordChangedAt = DateTime.UtcNow;
+        // Un compte qui recupere son mot de passe par courriel prouve du
+        // meme coup qu'il possede l'adresse.
+        user.EmailConfirmed = true;
+        await _userManager.UpdateAsync(user);
+
+        await _userManager.ResetAccessFailedCountAsync(user);
+        await _userManager.SetLockoutEndDateAsync(user, null);
+        await _sessions.RevoquerToutes(user.Id, "Mot de passe reinitialise");
+
+        await _log.Log("MotDePasseReinitialise", "User", null, "Mot de passe reinitialise", user.Id,
+                     $"{user.FirstName} {user.LastName}", Ip());
+
+        return Ok(new { message = "Mot de passe enregistré. Vous pouvez vous connecter." });
+    }
+
+    /// <summary>Confirmation d'adresse depuis le lien recu.</summary>
+    [HttpPost("confirmer-email")]
+    public async Task<IActionResult> ConfirmerEmail(ConfirmationEmailDto dto)
+    {
+        var user = await _userManager.FindByIdAsync(dto.UserId ?? "");
+        if (user == null)
+            return BadRequest(new { message = "Ce lien n'est plus valable." });
+
+        if (user.EmailConfirmed)
+            return Ok(new { message = "Cette adresse était déjà confirmée." });
+
+        var resultat = await _userManager.ConfirmEmailAsync(user, dto.Jeton ?? "");
+        if (!resultat.Succeeded)
+            return BadRequest(new { message = "Ce lien a expiré ou a déjà servi. Redemandez-en un depuis la page Sécurité." });
+
+        return Ok(new { message = "Adresse confirmée." });
     }
 
     /// <summary>Get current user profile</summary>
@@ -131,20 +339,11 @@ public class AuthController : ControllerBase
         return Ok(MapToUserDto(user));
     }
 
-    /// <summary>Change password</summary>
-    [HttpPost("change-password")]
-    [Authorize]
-    public async Task<IActionResult> ChangePassword(ChangePasswordDto dto)
-    {
-        var user = await _userManager.FindByIdAsync(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
-        if (user == null) return NotFound();
-
-        var result = await _userManager.ChangePasswordAsync(user, dto.CurrentPassword, dto.NewPassword);
-        if (!result.Succeeded)
-            return BadRequest(new { message = string.Join(" ", result.Errors.Select(e => e.Description)) });
-
-        return Ok(new { message = "Mot de passe modifie avec succes." });
-    }
+    // Le changement de mot de passe a quitte ce controleur : il vit
+    // desormais dans SecurityController, avec le reste de ce qu'on fait
+    // pour proteger son compte. Il y ferme aussi les autres sessions et
+    // rend un jeton neuf — ce que cette version-ci ne faisait pas, laissant
+    // connecte quiconque avait le mot de passe qu'on venait de changer.
 
     /// <summary>RGPD : export des données personnelles de l'utilisateur (JSON).</summary>
     [HttpGet("export-data")]
@@ -259,63 +458,182 @@ public class AuthController : ControllerBase
         if (!string.IsNullOrEmpty(clientId) && root.TryGetProperty("aud", out var aud) && aud.GetString() != clientId)
             return Unauthorized(new { message = "Application Google non autorisée." });
 
-        var user = await _userManager.FindByEmailAsync(email);
-        if (user == null)
-        {
-            var given = root.TryGetProperty("given_name", out var g) ? g.GetString() : "";
-            var family = root.TryGetProperty("family_name", out var f) ? f.GetString() : "";
-            user = new AppUser
-            {
-                UserName = email, Email = email, EmailConfirmed = true,
-                FirstName = given ?? "", LastName = family ?? "", Role = "Candidate",
-            };
-            var create = await _userManager.CreateAsync(user);
-            if (!create.Succeeded)
-                return BadRequest(new { message = "Création du compte impossible." });
-            await _userManager.AddToRoleAsync(user, "Candidate");
-        }
+        var given = root.TryGetProperty("given_name", out var g) ? g.GetString() : "";
+        var family = root.TryGetProperty("family_name", out var f) ? f.GetString() : "";
+        var sujet = root.TryGetProperty("sub", out var s) ? s.GetString() : null;
 
-        return Ok(GenerateAuthResponse(user));
+        return await EntrerParFournisseur("Google", sujet, email, given, family);
+    }
+
+    /// <summary>
+    /// SSO LinkedIn (OpenID Connect). Le client obtient un code aupres de
+    /// LinkedIn, nous l'echangeons ici contre un jeton d'identite : le
+    /// secret de l'application ne quitte jamais le serveur.
+    /// </summary>
+    [HttpPost("linkedin")]
+    [AllowAnonymous]
+    public async Task<ActionResult<AuthResponseDto>> LinkedInSignIn(LinkedInDto dto)
+    {
+        var clientId = _config["LinkedIn:ClientId"];
+        var secret = _config["LinkedIn:ClientSecret"];
+        if (string.IsNullOrWhiteSpace(clientId) || string.IsNullOrWhiteSpace(secret))
+            return StatusCode(StatusCodes.Status501NotImplemented,
+                new { message = "La connexion LinkedIn n'est pas configurée sur ce serveur." });
+
+        if (string.IsNullOrWhiteSpace(dto.Code))
+            return BadRequest(new { message = "Code LinkedIn manquant." });
+
+        var http = _http.CreateClient();
+
+        var echange = await http.PostAsync("https://www.linkedin.com/oauth/v2/accessToken",
+            new FormUrlEncodedContent(new Dictionary<string, string>
+            {
+                ["grant_type"] = "authorization_code",
+                ["code"] = dto.Code,
+                ["redirect_uri"] = dto.RedirectUri,
+                ["client_id"] = clientId,
+                ["client_secret"] = secret,
+            }));
+
+        if (!echange.IsSuccessStatusCode)
+            return Unauthorized(new { message = "LinkedIn a refusé l'échange. Reprenez la connexion." });
+
+        using var jetonDoc = System.Text.Json.JsonDocument.Parse(await echange.Content.ReadAsStringAsync());
+        if (!jetonDoc.RootElement.TryGetProperty("access_token", out var acces))
+            return Unauthorized(new { message = "Réponse LinkedIn inattendue." });
+
+        // « userinfo » est le point OpenID standard : il rend l'identifiant,
+        // l'adresse et le nom sans avoir a demander de permission de plus.
+        using var requete = new HttpRequestMessage(HttpMethod.Get, "https://api.linkedin.com/v2/userinfo");
+        requete.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", acces.GetString());
+        var profil = await http.SendAsync(requete);
+        if (!profil.IsSuccessStatusCode)
+            return Unauthorized(new { message = "Profil LinkedIn illisible." });
+
+        using var doc = System.Text.Json.JsonDocument.Parse(await profil.Content.ReadAsStringAsync());
+        var root = doc.RootElement;
+
+        var email = root.TryGetProperty("email", out var e) ? e.GetString() : null;
+        if (string.IsNullOrEmpty(email))
+            return Unauthorized(new { message = "LinkedIn n'a pas communiqué d'adresse e-mail." });
+
+        return await EntrerParFournisseur(
+            "LinkedIn",
+            root.TryGetProperty("sub", out var s) ? s.GetString() : null,
+            email,
+            root.TryGetProperty("given_name", out var g) ? g.GetString() : "",
+            root.TryGetProperty("family_name", out var f) ? f.GetString() : "");
     }
 
     // ── Helpers ──
 
-    private AuthResponseDto GenerateAuthResponse(AppUser user)
+    /// <summary>
+    /// Entree par un fournisseur externe.
+    ///
+    /// La version precedente rapprochait les comptes sur la seule adresse
+    /// e-mail. Le rapprochement se fait maintenant sur l'identifiant que le
+    /// fournisseur donne au compte (« sub »), enregistre dans la table des
+    /// connexions externes d'Identity : une adresse peut changer de mains,
+    /// pas cet identifiant-la.
+    ///
+    /// La double authentification s'applique aussi ici : la contourner par
+    /// un bouton « Continuer avec Google » la rendrait decorative.
+    /// </summary>
+    private async Task<ActionResult<AuthResponseDto>> EntrerParFournisseur(
+        string fournisseur, string? sujet, string email, string? prenom, string? nom)
     {
-        var token = GenerateJwtToken(user);
-        return new AuthResponseDto
+        AppUser? user = null;
+
+        if (!string.IsNullOrEmpty(sujet))
+            user = await _userManager.FindByLoginAsync(fournisseur, sujet);
+
+        user ??= await _userManager.FindByEmailAsync(email);
+
+        if (user == null)
         {
-            Token = token.Token,
-            Expiration = token.Expiration,
-            User = MapToUserDto(user)
-        };
+            var ouvert = await _context.PlatformSettings
+                .Where(s => s.Key == "allow_registration").Select(s => s.Value).FirstOrDefaultAsync();
+            if (ouvert == "false")
+                return BadRequest(new { message = "Les inscriptions sont actuellement fermées." });
+
+            user = new AppUser
+            {
+                UserName = email,
+                Email = email,
+                // Le fournisseur a deja verifie l'adresse : la faire
+                // reconfirmer serait demander deux fois la meme preuve.
+                EmailConfirmed = true,
+                FirstName = prenom ?? "",
+                LastName = nom ?? "",
+                Role = "Candidate",
+            };
+            var creation = await _userManager.CreateAsync(user);
+            if (!creation.Succeeded)
+                return BadRequest(new { message = "Création du compte impossible." });
+            await _userManager.AddToRoleAsync(user, "Candidate");
+        }
+
+        if (!user.IsActive)
+            return Unauthorized(new { message = "Ce compte est suspendu." });
+
+        // Lie le compte au fournisseur si ce n'est pas deja fait : la
+        // prochaine entree se fera sur l'identifiant, plus sur l'adresse.
+        if (!string.IsNullOrEmpty(sujet))
+        {
+            var connus = await _userManager.GetLoginsAsync(user);
+            if (!connus.Any(l => l.LoginProvider == fournisseur))
+                await _userManager.AddLoginAsync(user, new UserLoginInfo(fournisseur, sujet, fournisseur));
+        }
+
+        if (await _userManager.GetTwoFactorEnabledAsync(user))
+        {
+            return Ok(new AuthResponseDto
+            {
+                RequiresTwoFactor = true,
+                ChallengeToken = _sessions.OuvrirDefi(user),
+                User = MapToUserDto(user),
+            });
+        }
+
+        return Ok(await Reponse(user, fournisseur));
     }
 
-    private (string Token, DateTime Expiration) GenerateJwtToken(AppUser user)
+    /// <summary>Ouvre la session, note la connexion, alerte si l'appareil est neuf.</summary>
+    private async Task<AuthResponseDto> Reponse(AppUser user, string methode)
     {
-        var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_config["Jwt:Key"]!));
-        var creds = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
-        var expiration = DateTime.UtcNow.AddDays(7);
+        var agent = Request.Headers.UserAgent.ToString();
+        var ip = Ip();
 
-        var claims = new List<Claim>
+        // A verifier avant d'ouvrir la session : celle qu'on ouvre rendrait
+        // aussitot l'appareil « connu ».
+        var connu = await _sessions.AppareilConnu(user.Id, agent, ip);
+
+        var (jeton, expiration) = await _sessions.Ouvrir(user, methode, HttpContext);
+
+        user.LastLoginAt = DateTime.UtcNow;
+        await _userManager.UpdateAsync(user);
+
+        await _log.Log("Login", "User", null, $"Connexion: {user.FirstName} {user.LastName}", user.Id,
+                     $"{user.FirstName} {user.LastName}", ip);
+
+        // Un courriel a chaque connexion serait ignore au bout de trois
+        // jours, et l'alerte qui compte passerait avec les autres.
+        if (!connu)
         {
-            new(ClaimTypes.NameIdentifier, user.Id),
-            new(ClaimTypes.Email, user.Email!),
-            new(ClaimTypes.GivenName, user.FirstName),
-            new(ClaimTypes.Surname, user.LastName),
-            new(ClaimTypes.Role, user.Role),
-            new(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString())
-        };
+            await _mail.Envoyer(ModelesCourriel.NouvelleConnexion(
+                user.Email!, user.FirstName, SessionService.DecrireAppareil(agent),
+                ip ?? "inconnue", DateTime.UtcNow, $"{SiteUrl}/securite"));
+        }
 
-        var token = new JwtSecurityToken(
-            issuer: _config["Jwt:Issuer"],
-            audience: _config["Jwt:Audience"],
-            claims: claims,
-            expires: expiration,
-            signingCredentials: creds
-        );
+        return new AuthResponseDto { Token = jeton, Expiration = expiration, User = MapToUserDto(user) };
+    }
 
-        return (new JwtSecurityTokenHandler().WriteToken(token), expiration);
+    private async Task EnvoyerConfirmation(AppUser user)
+    {
+        var jeton = await _userManager.GenerateEmailConfirmationTokenAsync(user);
+        var lien = $"{SiteUrl}/confirmer-email" +
+                   $"?id={Uri.EscapeDataString(user.Id)}&jeton={Uri.EscapeDataString(jeton)}";
+        await _mail.Envoyer(ModelesCourriel.Confirmation(user.Email!, user.FirstName, lien));
     }
 
     private static UserDto MapToUserDto(AppUser user) => new()
@@ -337,7 +655,9 @@ public class AuthController : ControllerBase
         LinkedInUrl = user.LinkedInUrl,
         PortfolioUrl = user.PortfolioUrl,
         IsSearchable = user.IsSearchable,
-        CreatedAt = user.CreatedAt
+        CreatedAt = user.CreatedAt,
+        EmailConfirmed = user.EmailConfirmed,
+        TwoFactorEnabled = user.TwoFactorEnabled,
     };
 }
 
