@@ -99,7 +99,14 @@ public class OvhSmsService
                 ["message"] = message,
                 ["receivers"] = new[] { numero },
                 ["charset"] = "UTF-8",
-                ["class"] = "sms",
+                // « phoneDisplay » et non « sms » : l'enumeration d'OVH
+                // n'admet que flash, phoneDisplay, sim et toolkit, et refuse
+                // la requete entiere sinon. C'est celle-ci qu'il faut — le
+                // message se range dans la boite de reception, ou l'on peut
+                // le relire. « flash » s'affiche a l'ecran sans etre garde :
+                // un code de connexion qu'on ne peut pas relire ne sert a
+                // rien des qu'on bascule vers une autre application.
+                ["class"] = "phoneDisplay",
                 ["priority"] = "high",
                 ["noStopClause"] = !string.IsNullOrWhiteSpace(_expediteur),
             };
@@ -245,12 +252,26 @@ public class OvhSmsService
         return chiffres is >= 8 and <= 15 ? n : null;
     }
 
-    /// <summary>« +33 6 •• •• •• 78 » : de quoi se reconnaitre sans exposer le numero.</summary>
+    /// <summary>
+    /// « +33 6 •• •• •• 77 » : de quoi se reconnaitre sans exposer le numero.
+    ///
+    /// La decoupe suit celle qu'on lit a voix haute — indicatif, chiffre
+    /// d'operateur, puis paires. Couper aveuglement aux cinq premiers
+    /// caracteres donnait « +3363 •• •• •• 77 », qui ne ressemble a aucun
+    /// numero et se relit mal.
+    /// </summary>
     public static string Masquer(string? numero)
     {
         var n = Normaliser(numero);
         if (n == null) return "numero inconnu";
-        return n.Length <= 6 ? n : $"{n[..Math.Min(5, n.Length)]} •• •• •• {n[^2..]}";
+        if (n.Length <= 6) return n;
+
+        // Numero francais : « +33 6 •• •• •• 77 ».
+        if (n.StartsWith("+33") && n.Length == 12)
+            return $"+33 {n[3]} •• •• •• {n[^2..]}";
+
+        // Ailleurs, on garde l'indicatif tel qu'il vient et les deux derniers.
+        return $"{n[..Math.Min(4, n.Length - 2)]} •• •• •• {n[^2..]}";
     }
 
     private static string LireErreur(string corps, int code)
