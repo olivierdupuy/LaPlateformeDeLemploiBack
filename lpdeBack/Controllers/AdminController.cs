@@ -38,6 +38,24 @@ public class AdminController : ControllerBase
     private string UserFullName() => $"{User.FindFirstValue(ClaimTypes.GivenName)} {User.FindFirstValue(ClaimTypes.Surname)}";
     private string? Ip() => HttpContext.Connection.RemoteIpAddress?.ToString();
 
+    /// <summary>
+    /// Le membre dont on touche le dossier.
+    ///
+    /// « Section de CV 412 supprimée » n'apprend rien a qui relira le
+    /// journal dans six mois. Ce qui fait le sens de l'entree, c'est le
+    /// compte concerne : un administrateur qui modifie le CV de
+    /// quelqu'un d'autre est exactement ce qu'une trace doit montrer.
+    /// </summary>
+    private async Task<string> Concerne(string? userId)
+    {
+        if (string.IsNullOrEmpty(userId)) return "compte inconnu";
+        var u = await _context.Users
+            .Where(x => x.Id == userId)
+            .Select(x => new { x.FirstName, x.LastName, x.Email })
+            .FirstOrDefaultAsync();
+        return u == null ? "compte supprime" : $"{u.FirstName} {u.LastName} ({u.Email})".Trim();
+    }
+
     // Entreprises fictives créées par le seed de démonstration.
     private static readonly string[] SeedCompanies = { "TechCorp", "CreativeStudio", "CloudNine", "StartupFlow", "FinancePlus" };
 
@@ -121,16 +139,47 @@ public class AdminController : ControllerBase
         });
     }
 
-    /// <summary>Admin : supprime les offres de démonstration seedées (candidatures liées supprimées en cascade).</summary>
+    /// <summary>
+    /// Supprime les offres de demonstration seedees.
+    ///
+    /// Les candidatures liees partent en cascade, et elles peuvent etre
+    /// reelles : un visiteur a pu postuler a une offre de demonstration
+    /// sans savoir qu'elle en etait une. L'appel annonce donc ce qu'il
+    /// detruirait et ne detruit rien tant qu'on ne le lui redemande pas
+    /// avec « confirmer=true ».
+    /// </summary>
     [HttpDelete("seed-offers")]
-    public async Task<ActionResult<object>> DeleteSeedOffers()
+    public async Task<ActionResult<object>> DeleteSeedOffers([FromQuery] bool confirmer = false)
     {
         var seed = await _context.JobOffers
             .Where(j => j.ExternalSource == null && SeedCompanies.Contains(j.Company))
             .ToListAsync();
+
+        var ids = seed.Select(o => o.Id).ToList();
+        var candidatures = await _context.Applications.CountAsync(a => ids.Contains(a.JobOfferId));
+
+        if (!confirmer)
+            return Conflict(new
+            {
+                confirmationRequise = true,
+                portee = new
+                {
+                    offres = seed.Count,
+                    candidatures,
+                    entreprises = seed.Select(o => o.Company).Distinct().OrderBy(c => c),
+                    titres = seed.Select(o => o.Title),
+                },
+                message = $"Rien n'a été supprimé. Cet appel effacerait {seed.Count} offre(s) et {candidatures} candidature(s) en cascade. Rappelez-le avec « ?confirmer=true » pour l'exécuter.",
+            });
+
         _context.JobOffers.RemoveRange(seed);
         await _context.SaveChangesAsync();
-        return Ok(new { deleted = seed.Count, titles = seed.Select(o => o.Title), message = $"{seed.Count} offre(s) de démonstration supprimée(s)." });
+
+        await _log.Log("DeleteSeedOffers", "JobOffer", null,
+            $"{seed.Count} offre(s) de démonstration supprimée(s), {candidatures} candidature(s) emportée(s) en cascade",
+            UserId(), UserFullName(), Ip());
+
+        return Ok(new { deleted = seed.Count, candidatures, titles = seed.Select(o => o.Title), message = $"{seed.Count} offre(s) de démonstration supprimée(s), {candidatures} candidature(s) emportée(s)." });
     }
 
     /// <summary>
@@ -170,7 +219,8 @@ public class AdminController : ControllerBase
     /// supprime aussi, ce qui doit rester un geste explicite.
     /// </summary>
     [HttpDelete("offers/keep-france-travail")]
-    public async Task<ActionResult<object>> KeepOnlyFranceTravail([FromQuery] bool preserverPlateforme = true)
+    public async Task<ActionResult<object>> KeepOnlyFranceTravail(
+        [FromQuery] bool preserverPlateforme = true, [FromQuery] bool confirmer = false)
     {
         var aSupprimer = _context.JobOffers.Where(j => j.ExternalSource != "francetravail");
         if (preserverPlateforme)
@@ -183,26 +233,72 @@ public class AdminController : ControllerBase
             .Select(g => new { source = g.Key ?? "(plateforme)", total = g.Count() })
             .ToListAsync();
 
+        var aPartir = detail.Sum(d => d.total);
+        var candidatures = await _context.Applications
+            .CountAsync(a => a.JobOffer.ExternalSource != "francetravail"
+                             && (!preserverPlateforme || a.JobOffer.ExternalSource != null));
+
+        // La coupe la plus large du panneau. Elle s'annonce avant de
+        // tomber, et le mode « plateforme comprise » se demande deux
+        // fois : il detruit le travail des recruteurs.
+        if (!confirmer)
+            return Conflict(new
+            {
+                confirmationRequise = true,
+                portee = new { offres = aPartir, candidatures, preserverPlateforme, detail },
+                message = $"Rien n'a été supprimé. Cet appel effacerait {aPartir} offre(s) et {candidatures} candidature(s) en cascade"
+                          + (preserverPlateforme
+                              ? ". Les offres publiées sur la plateforme sont préservées."
+                              : ", *y compris les offres publiées par les recruteurs*.")
+                          + " Rappelez-le avec « &confirmer=true » pour l'exécuter.",
+            });
+
         // ExecuteDelete : supprimer en base sans materialiser deux cent
         // mille entites. Les candidatures liees partent en cascade.
         var supprimees = await aSupprimer.ExecuteDeleteAsync();
 
         var restantes = await _context.JobOffers.CountAsync();
         await _log.Log("DeleteOffers", "JobOffer", null,
-            $"{supprimees} offre(s) supprimée(s), {restantes} restante(s)",
+            $"{supprimees} offre(s) supprimée(s), {candidatures} candidature(s) emportée(s), {restantes} restante(s)"
+            + (preserverPlateforme ? "" : " — offres de la plateforme comprises"),
             UserId(), UserFullName(), Ip());
 
-        return Ok(new { supprimees, restantes, detail });
+        return Ok(new { supprimees, candidatures, restantes, detail });
     }
 
-    /// <summary>Admin : supprime toutes les offres d'une source d'import (ex. "adzuna") pour les ré-importer.</summary>
+    /// <summary>
+    /// Supprime toutes les offres d'une source d'import (ex. « adzuna »)
+    /// pour les re-importer. Comme au-dessus, la portee est annoncee
+    /// avant d'agir : une source mal orthographiee ne doit pas se
+    /// solder par un silence, et une source juste ne doit pas emporter
+    /// des candidatures sans prevenir.
+    /// </summary>
     [HttpDelete("offers-by-source/{source}")]
-    public async Task<ActionResult<object>> DeleteBySource(string source)
+    public async Task<ActionResult<object>> DeleteBySource(string source, [FromQuery] bool confirmer = false)
     {
         var toDelete = await _context.JobOffers.Where(j => j.ExternalSource == source).ToListAsync();
+
+        var ids = toDelete.Select(o => o.Id).ToList();
+        var candidatures = await _context.Applications.CountAsync(a => ids.Contains(a.JobOfferId));
+
+        if (!confirmer)
+            return Conflict(new
+            {
+                confirmationRequise = true,
+                portee = new { source, offres = toDelete.Count, candidatures },
+                message = toDelete.Count == 0
+                    ? $"Aucune offre ne porte la source « {source} ». Rien à supprimer — vérifiez l'orthographe auprès de /admin/offers/sources."
+                    : $"Rien n'a été supprimé. Cet appel effacerait {toDelete.Count} offre(s) [{source}] et {candidatures} candidature(s) en cascade. Rappelez-le avec « ?confirmer=true » pour l'exécuter.",
+            });
+
         _context.JobOffers.RemoveRange(toDelete);
         await _context.SaveChangesAsync();
-        return Ok(new { deleted = toDelete.Count, message = $"{toDelete.Count} offre(s) [{source}] supprimée(s)." });
+
+        await _log.Log("DeleteOffersBySource", "JobOffer", null,
+            $"{toDelete.Count} offre(s) de source « {source} » supprimée(s), {candidatures} candidature(s) emportée(s) en cascade",
+            UserId(), UserFullName(), Ip());
+
+        return Ok(new { deleted = toDelete.Count, candidatures, message = $"{toDelete.Count} offre(s) [{source}] supprimée(s), {candidatures} candidature(s) emportée(s)." });
     }
 
     // ═══════════════════════════════════
@@ -368,6 +464,8 @@ public class AdminController : ControllerBase
         if (ann == null) return NotFound();
         _context.Announcements.Remove(ann);
         await _context.SaveChangesAsync();
+        await _log.Log("DeleteAnnouncement", "Announcement", id,
+            $"Annonce supprimée : {ann.Title}", UserId(), UserFullName(), Ip());
         return NoContent();
     }
 
@@ -378,6 +476,12 @@ public class AdminController : ControllerBase
         if (ann == null) return NotFound();
         ann.IsActive = !ann.IsActive;
         await _context.SaveChangesAsync();
+        // Une banniere qui reapparait sans qu'on sache qui l'a rallumee
+        // est une question sans reponse : la bascule se journalise dans
+        // les deux sens.
+        await _log.Log("ToggleAnnouncement", "Announcement", id,
+            $"Annonce {(ann.IsActive ? "activée" : "désactivée")} : {ann.Title}",
+            UserId(), UserFullName(), Ip());
         return Ok(new { ann.Id, ann.IsActive });
     }
 
@@ -953,6 +1057,9 @@ public class AdminController : ControllerBase
         if (dto.AlerteActive.HasValue) s.AlertEnabled = dto.AlerteActive.Value;
         if (dto.Libelle != null) s.Label = dto.Libelle;
         await _context.SaveChangesAsync();
+        await _log.Log("UpdateSavedSearch", "SavedSearch", id,
+            $"Recherche « {s.Label} » de {await Concerne(s.UserId)} modifiée — alerte {(s.AlertEnabled ? "active" : "coupée")}",
+            UserId(), UserFullName(), Ip());
         return Ok(new { s.Id, s.AlertEnabled, s.Label });
     }
 
@@ -961,8 +1068,11 @@ public class AdminController : ControllerBase
     {
         var s = await _context.SavedSearches.FindAsync(id);
         if (s == null) return NotFound();
+        var qui = await Concerne(s.UserId);
         _context.SavedSearches.Remove(s);
         await _context.SaveChangesAsync();
+        await _log.Log("DeleteSavedSearch", "SavedSearch", id,
+            $"Recherche « {s.Label} » de {qui} supprimée", UserId(), UserFullName(), Ip());
         return NoContent();
     }
 
@@ -987,10 +1097,18 @@ public class AdminController : ControllerBase
     [HttpDelete("interviews/{id}")]
     public async Task<IActionResult> SupprimerEntretien(int id)
     {
-        var i = await _context.Interviews.FindAsync(id);
+        // Charge avec la candidature : un entretien annule concerne deux
+        // personnes qui l'avaient inscrit a leur agenda, et la trace doit
+        // dire lesquelles.
+        var i = await _context.Interviews
+            .Include(x => x.Application).ThenInclude(a => a.JobOffer)
+            .FirstOrDefaultAsync(x => x.Id == id);
         if (i == null) return NotFound();
+        var quoi = $"Entretien du {i.ProposedAt:dd/MM/yyyy à HH:mm} avec {i.Application.FullName} "
+                 + $"pour « {i.Application.JobOffer.Title} » supprimé";
         _context.Interviews.Remove(i);
         await _context.SaveChangesAsync();
+        await _log.Log("DeleteInterview", "Interview", id, quoi, UserId(), UserFullName(), Ip());
         return NoContent();
     }
 
@@ -999,8 +1117,11 @@ public class AdminController : ControllerBase
     {
         var n = await _context.JobNotes.FindAsync(id);
         if (n == null) return NotFound();
+        var qui = await Concerne(n.UserId);
         _context.JobNotes.Remove(n);
         await _context.SaveChangesAsync();
+        await _log.Log("DeleteJobNote", "JobNote", id,
+            $"Note de {qui} sur l'offre {n.JobOfferId} supprimée", UserId(), UserFullName(), Ip());
         return NoContent();
     }
 
@@ -1009,12 +1130,19 @@ public class AdminController : ControllerBase
     {
         var c = await _context.CvSections.FindAsync(id);
         if (c == null) return NotFound();
+        var avant = c.Title;
         if (dto.Titre != null) c.Title = dto.Titre;
         if (dto.Organisation != null) c.Organization = dto.Organisation;
         if (dto.Lieu != null) c.Location = dto.Lieu;
         if (dto.Description != null) c.Description = dto.Description;
         if (dto.Niveau != null) c.Level = dto.Niveau;
         await _context.SaveChangesAsync();
+        // Ecrire dans le CV de quelqu'un d'autre est precisement ce qu'un
+        // journal existe pour rendre visible.
+        await _log.Log("UpdateCvSection", "CvSection", id,
+            $"Section « {avant} » du CV de {await Concerne(c.UserId)} modifiée"
+            + (dto.Titre != null && dto.Titre != avant ? $" — devenue « {c.Title} »" : ""),
+            UserId(), UserFullName(), Ip());
         return Ok(new { c.Id, c.Title });
     }
 
@@ -1023,8 +1151,11 @@ public class AdminController : ControllerBase
     {
         var c = await _context.CvSections.FindAsync(id);
         if (c == null) return NotFound();
+        var qui = await Concerne(c.UserId);
         _context.CvSections.Remove(c);
         await _context.SaveChangesAsync();
+        await _log.Log("DeleteCvSection", "CvSection", id,
+            $"Section « {c.Title} » du CV de {qui} supprimée", UserId(), UserFullName(), Ip());
         return NoContent();
     }
 
@@ -1402,6 +1533,15 @@ public class AdminController : ControllerBase
             return BadRequest(new { message = "Aucune adresse de destination." });
 
         var parti = await mail.Envoyer(ModelesCourriel.Essai(destinataire));
+
+        // Un essai part vers une adresse choisie librement. C'est peu de
+        // chose, et c'est justement pourquoi il doit laisser une trace :
+        // le seul moyen de savoir que le serveur d'envoi a servi a autre
+        // chose qu'a un controle.
+        await _log.Log("TestEmail", "Email", null,
+            $"Message de contrôle {(parti ? "expédié" : "refusé")} vers {destinataire}",
+            UserId(), UserFullName(), Ip());
+
         return Ok(new
         {
             parti,
