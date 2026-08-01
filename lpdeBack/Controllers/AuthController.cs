@@ -30,6 +30,8 @@ public class AuthController : ControllerBase
     private readonly IEmailSender _mail;
     private readonly IHttpClientFactory _http;
     private readonly DeuxFacteursSms _sms;
+    private readonly DepotFichiers _depot;
+    private readonly ILogger<AuthController> _journal;
 
     public AuthController(
         UserManager<AppUser> userManager,
@@ -40,8 +42,12 @@ public class AuthController : ControllerBase
         SessionService sessions,
         IEmailSender mail,
         IHttpClientFactory http,
-        DeuxFacteursSms sms)
+        DeuxFacteursSms sms,
+        DepotFichiers depot,
+        ILogger<AuthController> journal)
     {
+        _depot = depot;
+        _journal = journal;
         _userManager = userManager;
         _signInManager = signInManager;
         _config = config;
@@ -347,6 +353,41 @@ public class AuthController : ControllerBase
         return Ok(new { message = "Adresse confirmée." });
     }
 
+    /// <summary>
+    /// Renvoie le lien de confirmation.
+    ///
+    /// Le premier message se perd — indesirables, adresse mal saisie,
+    /// boite pleine. Sans ce renvoi, le compte reste bloque sur ce qui
+    /// engage, sans recours autre que d'ecrire au support.
+    ///
+    /// Soumis a la limitation « abonnement » : cinq par heure. Une
+    /// route qui expedie du courriel sur simple demande est un
+    /// amplificateur si on la laisse ouverte.
+    /// </summary>
+    [HttpPost("confirmer-email/renvoyer")]
+    [Authorize]
+    [EnableRateLimiting("abonnement")]
+    public async Task<IActionResult> RenvoyerConfirmation()
+    {
+        var user = await _userManager.FindByIdAsync(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
+        if (user == null) return NotFound();
+
+        if (user.EmailConfirmed)
+            return Ok(new { message = "Votre adresse est déjà confirmée." });
+
+        try
+        {
+            await EnvoyerConfirmation(user);
+        }
+        catch (Exception ex)
+        {
+            _journal.LogWarning(ex, "Renvoi de confirmation impossible pour {Compte}", user.Id);
+            return StatusCode(502, new { message = "Le message n'a pas pu partir. Réessayez dans un instant." });
+        }
+
+        return Ok(new { message = $"Un nouveau lien vient de partir vers {user.Email}." });
+    }
+
     /// <summary>Get current user profile</summary>
     [HttpGet("me")]
     [Authorize]
@@ -408,25 +449,94 @@ public class AuthController : ControllerBase
         return Ok(new { profile = MapToUserDto(user), applications, savedSearches, reviews, exportedAt = DateTime.UtcNow });
     }
 
-    /// <summary>RGPD : suppression du compte et des données personnelles associées.</summary>
+    /// <summary>
+    /// RGPD : effacement du compte et de tout ce qui s'y rattache.
+    ///
+    /// L'ancienne version effacait la base et laissait le CV sur le
+    /// disque, toujours telechargeable. Elle ne redemandait rien non
+    /// plus : une session volee suffisait a tout detruire, sans retour.
+    ///
+    /// Ce qui appartient a deux personnes — un avis d'entreprise lu par
+    /// d'autres, un salaire partage — n'est pas efface mais detache :
+    /// les liens vers l'auteur sont declares « SetNull », si bien que
+    /// supprimer le compte anonymise le contenu au lieu de le retirer du
+    /// site.
+    /// </summary>
     [HttpDelete("account")]
     [Authorize]
-    public async Task<IActionResult> DeleteAccount()
+    public async Task<IActionResult> DeleteAccount([FromBody] EffacementDto? dto)
     {
         var userId = User.FindFirstValue(ClaimTypes.NameIdentifier)!;
         var user = await _userManager.FindByIdAsync(userId);
         if (user == null) return NotFound();
 
+        // Le mot de passe, redemande au moment de l'acte. Un compte
+        // ouvert par un fournisseur externe n'en a pas : on ne peut pas
+        // l'exiger de lui.
+        if (await _userManager.HasPasswordAsync(user))
+        {
+            if (string.IsNullOrEmpty(dto?.MotDePasse))
+                return BadRequest(new { message = "Ressaisissez votre mot de passe pour confirmer l'effacement." });
+            if (!await _userManager.CheckPasswordAsync(user, dto.MotDePasse))
+                return Unauthorized(new { message = "Mot de passe incorrect." });
+        }
+
+        // De quoi ecrire le dernier message : apres, ces valeurs n'existent plus.
+        var adresse = user.Email;
+        var prenom = user.FirstName ?? "";
+        var role = (await _userManager.GetRolesAsync(user)).FirstOrDefault() ?? "?";
+
+        // ── Les fichiers, d'abord ──
+        // Avant la base : si l'effacement echouait a mi-chemin, mieux
+        // vaut un compte sans CV qu'un CV sans compte pour le reclamer.
+        var fichiers = _depot.EffacerTousDe(userId);
+
+        // ── Ce qui n'appartient qu'a lui ──
         _context.Applications.RemoveRange(_context.Applications.Where(a => a.UserId == userId));
         _context.SavedSearches.RemoveRange(_context.SavedSearches.Where(s => s.UserId == userId));
         _context.Notifications.RemoveRange(_context.Notifications.Where(n => n.UserId == userId));
         _context.CvSections.RemoveRange(_context.CvSections.Where(c => c.UserId == userId));
         _context.CompanyFollows.RemoveRange(_context.CompanyFollows.Where(f => f.UserId == userId));
         _context.PushTokens.RemoveRange(_context.PushTokens.Where(p => p.UserId == userId));
+        _context.JobNotes.RemoveRange(_context.JobNotes.Where(n => n.UserId == userId));
+        _context.MessageTemplates.RemoveRange(_context.MessageTemplates.Where(m => m.UserId == userId));
+        _context.UserSessions.RemoveRange(_context.UserSessions.Where(s => s.UserId == userId));
+
+        // L'abonnement a la lettre se tient par l'adresse, pas par le
+        // compte : sans cela, l'adresse continuerait de recevoir.
+        if (!string.IsNullOrWhiteSpace(adresse))
+            _context.NewsletterSubscribers.RemoveRange(
+                _context.NewsletterSubscribers.Where(s => s.Email == adresse));
+
+        // Les traces d'activite le nomment. On les detache plutot que de
+        // les effacer : le journal doit garder que l'action a eu lieu.
+        await _context.ActivityLogs
+            .Where(l => l.UserId == userId)
+            .ExecuteUpdateAsync(s => s
+                .SetProperty(l => l.UserId, (string?)null)
+                .SetProperty(l => l.UserName, "Compte effacé"));
+
         await _context.SaveChangesAsync();
 
-        await _userManager.DeleteAsync(user);
-        return Ok(new { message = "Compte supprimé." });
+        var resultat = await _userManager.DeleteAsync(user);
+        if (!resultat.Succeeded)
+            return BadRequest(new { message = "Le compte n'a pas pu être effacé.", erreurs = resultat.Errors.Select(e => e.Description) });
+
+        // Une trace sans nom ni adresse : elle dit qu'un effacement a eu
+        // lieu, sans reconstituer ce qu'on vient d'effacer.
+        await _log.Log("DeleteAccount", "User", null,
+            $"Un compte « {role} » a été effacé — {fichiers} fichier(s) supprimé(s)",
+            null, "Compte effacé", HttpContext.Connection.RemoteIpAddress?.ToString());
+
+        // Le dernier message part apres coup : son echec ne doit pas
+        // laisser un compte a moitie efface.
+        if (!string.IsNullOrWhiteSpace(adresse))
+        {
+            try { await _mail.Envoyer(ModelesCourriel.CompteEfface(adresse, prenom, fichiers)); }
+            catch (Exception ex) { _journal.LogWarning(ex, "Confirmation d'effacement non expediee"); }
+        }
+
+        return Ok(new { message = "Compte supprimé.", fichiers });
     }
 
     /// <summary>Admin: list all users</summary>
@@ -689,6 +799,9 @@ public class AuthController : ControllerBase
         var (jeton, expiration) = await _sessions.Ouvrir(user, methode, HttpContext);
 
         user.LastLoginAt = DateTime.UtcNow;
+        // Une connexion repousse l'echeance de fermeture pour
+        // inactivite : le preavis deja envoye n'a plus lieu d'etre.
+        user.PreavisSuppressionEnvoye = false;
         await _userManager.UpdateAsync(user);
 
         await _log.Log("Login", "User", null, $"Connexion: {user.FirstName} {user.LastName}", user.Id,
@@ -737,6 +850,18 @@ public class AuthController : ControllerBase
         EmailConfirmed = user.EmailConfirmed,
         TwoFactorEnabled = user.TwoFactorEnabled,
     };
+}
+
+/// <summary>
+/// Ce qu'on redemande avant d'effacer un compte.
+///
+/// Le corps est optionnel cote route, car un compte ouvert par un
+/// fournisseur externe n'a pas de mot de passe a ressaisir.
+/// </summary>
+public class EffacementDto
+{
+    [Longueur(200)]
+    public string? MotDePasse { get; set; }
 }
 
 // Small DTO for role change

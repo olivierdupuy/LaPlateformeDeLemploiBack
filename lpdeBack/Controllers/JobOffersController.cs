@@ -12,6 +12,8 @@ using lpdeBack.DTOs;
 using lpdeBack.Hubs;
 using lpdeBack.Services;
 
+using lpdeBack.Validation;
+
 namespace lpdeBack.Controllers;
 
 [ApiController]
@@ -1205,6 +1207,9 @@ public class JobOffersController : ControllerBase
 
     [HttpPost]
     [Authorize(Roles = "Admin,Recruiter")]
+    // Une offre paraît en public : elle engage la plateforme autant que
+    // son auteur. On veut savoir que l'adresse est bien la sienne.
+    [AdresseConfirmee]
     public async Task<ActionResult<JobOffer>> Create(JobOfferCreateDto dto)
     {
         // Check if moderation is required
