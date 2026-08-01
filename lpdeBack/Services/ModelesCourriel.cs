@@ -51,7 +51,8 @@ public static class ModelesCourriel
                 {action}
                 <tr><td style="padding:18px 32px;border-top:1px solid #ebdac1;font-size:12px;line-height:1.6;color:#81999e">
                   Ce message vous est adresse parce qu'un compte existe a cette adresse sur {Marque}.
-                  Il est envoye automatiquement : merci de ne pas y repondre.
+                  Il part automatiquement, mais il n'est pas sans retour : repondez a ce message
+                  si quelque chose vous parait anormal, quelqu'un vous lira.
                 </td></tr>
               </table>
             </body></html>

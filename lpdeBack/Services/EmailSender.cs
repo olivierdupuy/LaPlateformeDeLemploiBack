@@ -47,7 +47,7 @@ public sealed class EmailSender : IEmailSender
         _port = int.TryParse(config["Email:Port"], out var p) ? p : 587;
         _identifiant = config["Email:User"];
         _motDePasse = config["Email:Password"];
-        _expediteur = config["Email:From"] ?? "no-reply@laplateformedelemploi.com";
+        _expediteur = config["Email:From"] ?? "contact@laplateformedelemploi.com";
         _nomExpediteur = config["Email:FromName"] ?? "La Plateforme de l'emploi";
         _ssl = !bool.TryParse(config["Email:Ssl"], out var s) || s;
     }
