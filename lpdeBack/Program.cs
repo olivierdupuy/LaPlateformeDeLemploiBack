@@ -239,6 +239,47 @@ using (var scope = app.Services.CreateScope())
         await db.SaveChangesAsync();
     }
 
+    // ── Mentions legales ──
+    //
+    // Elles vivent dans les parametres et non dans le code : ce sont des
+    // informations d'exploitation — raison sociale, SIRET, hebergeur — qui
+    // changent sans qu'on redeploie, et que l'exploitant doit pouvoir
+    // saisir lui-meme depuis la console.
+    //
+    // L'ajout se fait cle par cle et non dans le bloc ci-dessus : celui-ci
+    // ne s'execute que sur une base vierge, une nouvelle cle n'y serait
+    // jamais creee sur une base existante.
+    var mentions = new (string Cle, string Valeur, string Description)[]
+    {
+        ("legal_raison_sociale", "", "Mentions legales — raison sociale, forme juridique, capital"),
+        ("legal_adresse", "", "Mentions legales — adresse du siege social"),
+        ("legal_siret", "", "Mentions legales — numero SIRET"),
+        ("legal_tva", "", "Mentions legales — numero de TVA intracommunautaire"),
+        ("legal_telephone", "", "Mentions legales — telephone"),
+        ("legal_directeur_publication", "", "Mentions legales — directeur de la publication"),
+        // Verifie au registre RIPE : l'adresse du site pointe sur un reseau
+        // OVH SAS situe en France. Prerempli, a confirmer par l'exploitant.
+        ("legal_hebergeur", "OVHcloud (OVH SAS) — 2 rue Kellermann, 59100 Roubaix, France — 1007", "Mentions legales — hebergeur"),
+        ("legal_dpo", "", "Confidentialite — delegue a la protection des donnees, si designe"),
+        // Recommandation de la CNIL pour les donnees de recrutement : deux
+        // ans apres le dernier contact avec le candidat. Valeur proposee,
+        // a valider par l'exploitant.
+        ("legal_conservation_compte", "2 ans apres la derniere connexion", "Confidentialite — conservation d'un compte inactif"),
+        ("legal_conservation_candidatures", "2 ans apres le dernier contact, conformement a la recommandation de la CNIL", "Confidentialite — conservation des candidatures"),
+        ("legal_conservation_journal", "12 mois", "Confidentialite — conservation du journal d'administration"),
+    };
+
+    var clesExistantes = db.PlatformSettings.Select(s => s.Key).ToHashSet();
+    var manquantes = mentions
+        .Where(m => !clesExistantes.Contains(m.Cle))
+        .Select(m => new PlatformSetting { Key = m.Cle, Value = m.Valeur, Type = "string", Description = m.Description })
+        .ToList();
+    if (manquantes.Count > 0)
+    {
+        db.PlatformSettings.AddRange(manquantes);
+        await db.SaveChangesAsync();
+    }
+
     // ── Roles ──
     foreach (var role in new[] { "Admin", "Recruiter", "Candidate" })
     {

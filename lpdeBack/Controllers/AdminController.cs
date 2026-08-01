@@ -1248,7 +1248,16 @@ public class AdminController : ControllerBase
     [AllowAnonymous]
     public async Task<ActionResult<object>> GetPublicSettings()
     {
-        var publicKeys = new[] { "welcome_message", "contact_email", "allow_registration", "require_moderation", "maintenance_mode", "max_applications_per_candidate" };
+        // Les mentions legales alimentent des pages publiques : elles se lisent
+        // sans authentification, comme le reste de ce lot.
+        var publicKeys = new[]
+        {
+            "welcome_message", "contact_email", "allow_registration", "require_moderation",
+            "maintenance_mode", "max_applications_per_candidate",
+            "legal_raison_sociale", "legal_adresse", "legal_siret", "legal_tva",
+            "legal_telephone", "legal_directeur_publication", "legal_hebergeur", "legal_dpo",
+            "legal_conservation_compte", "legal_conservation_candidatures", "legal_conservation_journal",
+        };
         var settings = await _context.PlatformSettings
             .Where(s => publicKeys.Contains(s.Key))
             .ToDictionaryAsync(s => s.Key, s => s.Value);
