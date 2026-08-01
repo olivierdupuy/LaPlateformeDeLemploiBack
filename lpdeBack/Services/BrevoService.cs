@@ -124,9 +124,44 @@ public class BrevoService
                             actifs.Add(em.GetString() ?? "");
             }
 
-            return new Diagnostic(true, nom, credits,
-                                  actifs.Contains(_expediteur, StringComparer.OrdinalIgnoreCase),
-                                  actifs, null);
+            // ── Les domaines authentifies ──
+            //
+            // Brevo autorise un expediteur de deux facons, et le diagnostic
+            // n'en regardait qu'une. Declarer l'adresse une par une la fait
+            // apparaitre dans « /senders » ; authentifier le domaine entier
+            // — enregistrements DKIM et Brevo-code au DNS — autorise TOUTES
+            // ses adresses sans qu'aucune n'y figure.
+            //
+            // Ne consulter que la premiere liste faisait donc crier a
+            // l'expediteur invalide une configuration parfaitement valide,
+            // et souvent la meilleure des deux.
+            var domaines = new List<string>();
+            using var rd = new HttpRequestMessage(HttpMethod.Get, $"{Racine}/senders/domains");
+            Entetes(rd);
+            var reponseDomaines = await client.SendAsync(rd, ct);
+            if (reponseDomaines.IsSuccessStatusCode)
+            {
+                using var dd = JsonDocument.Parse(await reponseDomaines.Content.ReadAsStringAsync(ct));
+                if (dd.RootElement.TryGetProperty("domains", out var liste) && liste.ValueKind == JsonValueKind.Array)
+                    foreach (var d in liste.EnumerateArray())
+                    {
+                        var authentifie = d.TryGetProperty("authenticated", out var au) && au.ValueKind == JsonValueKind.True;
+                        var verifie = d.TryGetProperty("verified", out var ve) && ve.ValueKind == JsonValueKind.True;
+                        if ((authentifie || verifie) && d.TryGetProperty("domain_name", out var dn))
+                            domaines.Add(dn.GetString() ?? "");
+                    }
+            }
+
+            var domaineDeLExpediteur = _expediteur.Split('@').LastOrDefault() ?? "";
+            var valide = actifs.Contains(_expediteur, StringComparer.OrdinalIgnoreCase)
+                         || domaines.Contains(domaineDeLExpediteur, StringComparer.OrdinalIgnoreCase);
+
+            // Les domaines rejoignent la liste montree : sans cela, le
+            // message d'aide affirmerait qu'aucune adresse n'est valide
+            // alors qu'un domaine entier l'est.
+            actifs.AddRange(domaines.Select(d => $"tout @{d}"));
+
+            return new Diagnostic(true, nom, credits, valide, actifs, null);
         }
         catch (Exception ex)
         {
