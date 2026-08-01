@@ -5,6 +5,7 @@ using System.Security.Claims;
 using lpdeBack.Data;
 using lpdeBack.Models;
 using lpdeBack.DTOs;
+using lpdeBack.Services;
 
 namespace lpdeBack.Controllers;
 
@@ -14,7 +15,14 @@ namespace lpdeBack.Controllers;
 public class InterviewsController : ControllerBase
 {
     private readonly AppDbContext _context;
-    public InterviewsController(AppDbContext context) => _context = context;
+    private readonly PerimetreRecruteur _perimetre;
+
+    public InterviewsController(AppDbContext context, PerimetreRecruteur perimetre)
+    {
+        _context = context;
+        _perimetre = perimetre;
+    }
+
     private string GetUserId() => User.FindFirstValue(ClaimTypes.NameIdentifier)!;
     private bool IsAdmin() => User.IsInRole("Admin");
 
@@ -29,9 +37,11 @@ public class InterviewsController : ControllerBase
 
         if (!IsAdmin())
         {
+            var equipe = await _perimetre.Equipe(userId);
             query = query.Where(i =>
                 i.Application.UserId == userId ||
-                i.Application.JobOffer.CreatedByUserId == userId);
+                (i.Application.JobOffer.CreatedByUserId != null
+                 && equipe.Contains(i.Application.JobOffer.CreatedByUserId)));
         }
 
         var interviews = await query.OrderByDescending(i => i.ProposedAt).ToListAsync();
@@ -52,7 +62,7 @@ public class InterviewsController : ControllerBase
     {
         var app = await _context.Applications.Include(a => a.JobOffer).FirstOrDefaultAsync(a => a.Id == dto.ApplicationId);
         if (app == null) return NotFound();
-        if (!IsAdmin() && app.JobOffer.CreatedByUserId != GetUserId()) return Forbid();
+        if (!IsAdmin() && !await _perimetre.PeutGerer(GetUserId(), app.JobOffer.CreatedByUserId)) return Forbid();
 
         var interview = new Interview
         {
@@ -95,7 +105,7 @@ public class InterviewsController : ControllerBase
 
         var userId = GetUserId();
         var isCandidate = interview.Application.UserId == userId;
-        var isRecruiter = interview.Application.JobOffer.CreatedByUserId == userId;
+        var isRecruiter = await _perimetre.PeutGerer(userId, interview.Application.JobOffer.CreatedByUserId);
         if (!IsAdmin() && !isCandidate && !isRecruiter) return Forbid();
 
         var valid = new[] { "Proposed", "Accepted", "Declined", "Completed", "Cancelled", "Negotiating" };
@@ -132,7 +142,7 @@ public class InterviewsController : ControllerBase
     {
         var interview = await _context.Interviews.Include(i => i.Application).ThenInclude(a => a.JobOffer).FirstOrDefaultAsync(i => i.Id == id);
         if (interview == null) return NotFound();
-        if (!IsAdmin() && interview.Application.JobOffer.CreatedByUserId != GetUserId()) return Forbid();
+        if (!IsAdmin() && !await _perimetre.PeutGerer(GetUserId(), interview.Application.JobOffer.CreatedByUserId)) return Forbid();
         _context.Interviews.Remove(interview);
         await _context.SaveChangesAsync();
         return NoContent();

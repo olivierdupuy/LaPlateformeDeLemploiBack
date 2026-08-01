@@ -19,11 +19,15 @@ public class MessagesController : ControllerBase
     private readonly AppDbContext _context;
     private readonly IHubContext<ChatHub> _hubContext;
     private readonly PushNotificationService _pushService;
-    public MessagesController(AppDbContext context, IHubContext<ChatHub> hubContext, PushNotificationService pushService)
+    private readonly PerimetreRecruteur _perimetre;
+
+    public MessagesController(AppDbContext context, IHubContext<ChatHub> hubContext,
+                              PushNotificationService pushService, PerimetreRecruteur perimetre)
     {
         _context = context;
         _hubContext = hubContext;
         _pushService = pushService;
+        _perimetre = perimetre;
     }
     private string GetUserId() => User.FindFirstValue(ClaimTypes.NameIdentifier)!;
 
@@ -83,7 +87,7 @@ public class MessagesController : ControllerBase
         if (app == null) return NotFound();
 
         // Only participants can view
-        if (app.UserId != userId && app.JobOffer.CreatedByUserId != userId)
+        if (app.UserId != userId && !await _perimetre.PeutGerer(userId, app.JobOffer.CreatedByUserId))
             return Forbid();
 
         var messages = await _context.Messages
@@ -109,11 +113,35 @@ public class MessagesController : ControllerBase
         if (app == null) return NotFound();
 
         var isCandidate = app.UserId == userId;
-        var isRecruiter = app.JobOffer.CreatedByUserId == userId;
+        var isRecruiter = await _perimetre.PeutGerer(userId, app.JobOffer.CreatedByUserId);
         if (!isCandidate && !isRecruiter) return Forbid();
 
         var receiverId = isCandidate ? app.JobOffer.CreatedByUserId : app.UserId;
         if (receiverId == null) return BadRequest("Destinataire introuvable.");
+
+        // ── Qui d'autre doit etre prevenu ──
+        //
+        // Le message ne porte qu'un destinataire, et c'est l'auteur de
+        // l'offre. Depuis que l'equipe partage les offres, un collegue
+        // peut avoir repris le dossier : la reponse du candidat ne
+        // prevenait alors personne d'utile, et si l'auteur a quitte
+        // l'entreprise, elle tombait dans un compte mort.
+        //
+        // On previent donc aussi les collegues qui ont deja ecrit dans
+        // cette conversation. Pas toute l'equipe : quelqu'un qui n'a
+        // jamais touche au dossier n'a pas a le suivre.
+        var aussiPrevenus = new List<string>();
+        if (isCandidate)
+        {
+            var equipe = await _perimetre.Equipe(app.JobOffer.CreatedByUserId);
+            aussiPrevenus = await _context.Messages
+                .Where(m => m.ApplicationId == dto.ApplicationId
+                            && m.SenderId != null && m.SenderId != receiverId
+                            && equipe.Contains(m.SenderId))
+                .Select(m => m.SenderId!)
+                .Distinct()
+                .ToListAsync();
+        }
 
         var message = new Message
         {
@@ -165,6 +193,23 @@ public class MessagesController : ControllerBase
         await _pushService.SendToUser(receiverId, "Nouveau message",
             $"{senderUser?.FirstName} {senderUser?.LastName}: {dto.Content[..Math.Min(dto.Content.Length, 80)]}",
             $"/conversation/{dto.ApplicationId}");
+
+        // Les collegues deja engages dans la conversation, prevenus eux aussi.
+        foreach (var collegue in aussiPrevenus)
+        {
+            _context.Notifications.Add(new Notification
+            {
+                UserId = collegue,
+                Title = "Nouveau message",
+                Message = $"{senderUser?.FirstName} {senderUser?.LastName} a repondu sur « {app.JobOffer.Title} ».",
+                Link = "/messagerie",
+                Type = "NouveauMessage",
+            });
+
+            foreach (var connId in ChatHub.GetConnectionIds(collegue))
+                await _hubContext.Clients.Client(connId).SendAsync("UnreadCountUpdate");
+        }
+        if (aussiPrevenus.Count > 0) await _context.SaveChangesAsync();
 
         return Ok(new { message.Id });
     }

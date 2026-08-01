@@ -380,6 +380,10 @@ builder.Services.AddScoped<lpdeBack.Services.DeuxFacteursSms>();
 // oublies cesseraient d'arriver avec le reste.
 builder.Services.AddSingleton<lpdeBack.Services.BrevoService>();
 builder.Services.AddScoped<lpdeBack.Services.NewsletterService>();
+// Qui peut gerer quoi, cote recruteur. En portee de requete : il
+// memoise l'equipe le temps d'un appel, pas au-dela.
+builder.Services.AddScoped<lpdeBack.Services.PerimetreRecruteur>();
+
 builder.Services.AddHostedService<lpdeBack.Services.NewsletterSenderService>();
 
 // La redaction hebdomadaire de la lettre. Elle ne fait que deposer des

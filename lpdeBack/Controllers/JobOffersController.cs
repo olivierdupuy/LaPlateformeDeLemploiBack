@@ -10,6 +10,7 @@ using lpdeBack.Data;
 using lpdeBack.Models;
 using lpdeBack.DTOs;
 using lpdeBack.Hubs;
+using lpdeBack.Services;
 
 namespace lpdeBack.Controllers;
 
@@ -18,11 +19,13 @@ namespace lpdeBack.Controllers;
 public class JobOffersController : ControllerBase
 {
     private readonly AppDbContext _context;
+    private readonly PerimetreRecruteur _perimetre;
     private readonly UserManager<AppUser> _userManager;
     private readonly IMemoryCache _cache;
 
-    public JobOffersController(AppDbContext context, UserManager<AppUser> userManager, IMemoryCache cache)
+    public JobOffersController(AppDbContext context, UserManager<AppUser> userManager, IMemoryCache cache, PerimetreRecruteur perimetre)
     {
+        _perimetre = perimetre;
         _context = context;
         _userManager = userManager;
         _cache = cache;
@@ -153,14 +156,14 @@ public class JobOffersController : ControllerBase
 
         // Un brouillon n'existe que pour son auteur (et l'administration) :
         // sans ce garde-fou, l'adresse directe le rendrait public.
-        if (job.IsDraft && !IsAdmin() && job.CreatedByUserId != userId) return NotFound();
+        if (job.IsDraft && !IsAdmin() && !await _perimetre.PeutGerer(userId, job.CreatedByUserId)) return NotFound();
 
         // Increment view count
         job.ViewCount++;
         await _context.SaveChangesAsync();
 
         // Only show applications if the logged-in user is the creator of this offer or an admin
-        var isOwner = userId != null && job.CreatedByUserId == userId;
+        var isOwner = userId != null && await _perimetre.PeutGerer(userId, job.CreatedByUserId);
         if (!isOwner && !IsAdmin())
         {
             job.Applications = new List<Application>();
@@ -526,7 +529,8 @@ public class JobOffersController : ControllerBase
         }
         else
         {
-            query = _context.JobOffers.Where(j => j.CreatedByUserId == userId);
+            var equipe = await _perimetre.Equipe(userId);
+            query = _context.JobOffers.Where(j => j.CreatedByUserId != null && equipe.Contains(j.CreatedByUserId));
         }
 
         return await query
@@ -571,7 +575,7 @@ public class JobOffersController : ControllerBase
     {
         var job = await _context.JobOffers.FindAsync(id);
         if (job == null) return NotFound();
-        if (!IsAdmin() && job.CreatedByUserId != GetUserId()) return Forbid();
+        if (!IsAdmin() && !await _perimetre.PeutGerer(GetUserId(), job.CreatedByUserId)) return Forbid();
         if (job.IsDraft) return BadRequest(new { message = "Ce brouillon n'a jamais ete publie : terminez sa redaction pour le mettre en ligne." });
 
         var durationStr = await _context.PlatformSettings
@@ -594,7 +598,7 @@ public class JobOffersController : ControllerBase
     {
         var job = await _context.JobOffers.FindAsync(id);
         if (job == null) return NotFound();
-        if (!IsAdmin() && job.CreatedByUserId != GetUserId()) return Forbid();
+        if (!IsAdmin() && !await _perimetre.PeutGerer(GetUserId(), job.CreatedByUserId)) return Forbid();
         job.IsFeatured = !job.IsFeatured;
         await _context.SaveChangesAsync();
         return new { isFeatured = job.IsFeatured };
@@ -607,7 +611,7 @@ public class JobOffersController : ControllerBase
     {
         var job = await _context.JobOffers.FindAsync(id);
         if (job == null) return NotFound();
-        if (!IsAdmin() && job.CreatedByUserId != GetUserId()) return Forbid();
+        if (!IsAdmin() && !await _perimetre.PeutGerer(GetUserId(), job.CreatedByUserId)) return Forbid();
 
         var apps = await _context.Applications.Where(a => a.JobOfferId == id).ToListAsync();
         var byStatus = apps.GroupBy(a => a.Status).Select(g => new { label = g.Key, value = g.Count() }).ToList();
@@ -1290,7 +1294,7 @@ public class JobOffersController : ControllerBase
         // — titre, description, remuneration, jusqu'au nom de
         // l'entreprise. Seuls l'administration et l'auteur de l'offre
         // peuvent la modifier.
-        if (!IsAdmin() && (job.CreatedByUserId == null || job.CreatedByUserId != GetUserId()))
+        if (!IsAdmin() && !await _perimetre.PeutGerer(GetUserId(), job.CreatedByUserId))
             return Forbid();
 
         // Une offre reprise chez un partenaire n'est pas notre contenu.

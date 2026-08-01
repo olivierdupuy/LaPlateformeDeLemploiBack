@@ -18,6 +18,7 @@ namespace lpdeBack.Controllers;
 public class ApplicationsController : ControllerBase
 {
     private readonly AppDbContext _context;
+    private readonly PerimetreRecruteur _perimetre;
     private readonly IHubContext<ChatHub> _hubContext;
     private readonly PushNotificationService _pushService;
     private readonly ActivityLogService _log;
@@ -28,8 +29,9 @@ public class ApplicationsController : ControllerBase
     public ApplicationsController(AppDbContext context, IHubContext<ChatHub> hubContext,
                                   PushNotificationService pushService, ActivityLogService log,
                                   IEmailSender mail, IConfiguration config,
-                                  ILogger<ApplicationsController> journal)
+                                  ILogger<ApplicationsController> journal, PerimetreRecruteur perimetre)
     {
+        _perimetre = perimetre;
         _log = log;
         _context = context;
         _hubContext = hubContext;
@@ -172,7 +174,11 @@ public class ApplicationsController : ControllerBase
         var userId = GetUserId();
         var query = _context.Applications.Include(a => a.JobOffer).AsQueryable();
         if (!IsAdmin())
-            query = query.Where(a => a.JobOffer.CreatedByUserId == userId);
+        {
+            var equipe = await _perimetre.Equipe(userId);
+            query = query.Where(a => a.JobOffer.CreatedByUserId != null
+                                     && equipe.Contains(a.JobOffer.CreatedByUserId));
+        }
         return await query.OrderByDescending(a => a.AppliedAt).ToListAsync();
     }
 
@@ -182,7 +188,7 @@ public class ApplicationsController : ControllerBase
     {
         var app = await _context.Applications.Include(a => a.JobOffer).FirstOrDefaultAsync(a => a.Id == id);
         if (app == null) return NotFound();
-        if (!IsAdmin() && app.JobOffer.CreatedByUserId != GetUserId()) return Forbid();
+        if (!IsAdmin() && !await _perimetre.PeutGerer(GetUserId(), app.JobOffer.CreatedByUserId)) return Forbid();
         return app;
     }
 
@@ -192,7 +198,7 @@ public class ApplicationsController : ControllerBase
     {
         var job = await _context.JobOffers.FindAsync(jobOfferId);
         if (job == null) return NotFound();
-        if (!IsAdmin() && job.CreatedByUserId != GetUserId()) return Forbid();
+        if (!IsAdmin() && !await _perimetre.PeutGerer(GetUserId(), job.CreatedByUserId)) return Forbid();
         return await _context.Applications.Where(a => a.JobOfferId == jobOfferId).OrderByDescending(a => a.AppliedAt).ToListAsync();
     }
 
@@ -202,7 +208,7 @@ public class ApplicationsController : ControllerBase
     {
         var app = await _context.Applications.Include(a => a.JobOffer).FirstOrDefaultAsync(a => a.Id == id);
         if (app == null) return NotFound();
-        if (!IsAdmin() && app.JobOffer.CreatedByUserId != GetUserId()) return Forbid();
+        if (!IsAdmin() && !await _perimetre.PeutGerer(GetUserId(), app.JobOffer.CreatedByUserId)) return Forbid();
 
         var validStatuses = new[] { "Pending", "Reviewed", "Accepted", "Rejected" };
         if (!validStatuses.Contains(dto.Status)) return BadRequest("Statut invalide.");
@@ -269,7 +275,7 @@ public class ApplicationsController : ControllerBase
     {
         var app = await _context.Applications.Include(a => a.JobOffer).FirstOrDefaultAsync(a => a.Id == id);
         if (app == null) return NotFound();
-        if (!IsAdmin() && app.JobOffer.CreatedByUserId != GetUserId()) return Forbid();
+        if (!IsAdmin() && !await _perimetre.PeutGerer(GetUserId(), app.JobOffer.CreatedByUserId)) return Forbid();
 
         app.RecruiterNotes = dto.Notes;
         await _context.SaveChangesAsync();
@@ -282,7 +288,7 @@ public class ApplicationsController : ControllerBase
     {
         var app = await _context.Applications.Include(a => a.JobOffer).FirstOrDefaultAsync(a => a.Id == id);
         if (app == null) return NotFound();
-        if (!IsAdmin() && app.JobOffer.CreatedByUserId != GetUserId()) return Forbid();
+        if (!IsAdmin() && !await _perimetre.PeutGerer(GetUserId(), app.JobOffer.CreatedByUserId)) return Forbid();
 
         // La suppression par le recruteur n'ecrivait rien au journal, alors
         // que celle de l'administration le fait. Une candidature pouvait
@@ -310,7 +316,9 @@ public class ApplicationsController : ControllerBase
     public async Task<ActionResult<object>> RecruiterStats()
     {
         var userId = GetUserId();
-        var myOffers = _context.JobOffers.Where(j => j.CreatedByUserId == userId);
+        var equipe = await _perimetre.Equipe(userId);
+        var myOffers = _context.JobOffers.Where(j => j.CreatedByUserId != null
+                                                     && equipe.Contains(j.CreatedByUserId));
         var myOfferIds = myOffers.Select(j => j.Id);
         var myApps = _context.Applications.Where(a => myOfferIds.Contains(a.JobOfferId));
 
