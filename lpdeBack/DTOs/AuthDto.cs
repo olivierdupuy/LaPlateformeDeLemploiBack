@@ -3,7 +3,7 @@ using lpdeBack.Validation;
 
 namespace lpdeBack.DTOs;
 
-public class RegisterDto
+public class RegisterDto : IFormulairePublic
 {
     [Required(ErrorMessage = "Indiquez votre prénom.")]
     [StringLength(Limites.Nom, MinimumLength = 2, ErrorMessage = "Le prénom fait entre 2 et 100 caractères.")]
@@ -31,6 +31,13 @@ public class RegisterDto
 
     [Longueur(Limites.Ligne), SansBalisage]
     public string? Company { get; set; }
+
+    // ── Anti-robots ──
+    // Invisible a l'ecran et hors du parcours au clavier : une personne
+    // ne peut pas remplir le premier, et met plus d'une seconde et demie
+    // a remplir le formulaire. Voir « Validation/AntiRobot.cs ».
+    public string? SiteWeb { get; set; }
+    public int? MsSaisie { get; set; }
 }
 
 public class LoginDto
@@ -166,11 +173,18 @@ public class UserDto
 
 // ── Recuperation et confirmation ──
 
-public class MotDePasseOublieDto
+public class MotDePasseOublieDto : IFormulairePublic
 {
     [Required(ErrorMessage = "Indiquez votre adresse e-mail.")]
     [AdresseCourriel]
     public string Email { get; set; } = string.Empty;
+
+    // ── Anti-robots ──
+    // Invisible a l'ecran et hors du parcours au clavier : une personne
+    // ne peut pas remplir le premier, et met plus d'une seconde et demie
+    // a remplir le formulaire. Voir « Validation/AntiRobot.cs ».
+    public string? SiteWeb { get; set; }
+    public int? MsSaisie { get; set; }
 }
 
 public class ReinitialisationDto

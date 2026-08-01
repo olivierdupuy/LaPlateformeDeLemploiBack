@@ -368,7 +368,7 @@ public class CompanyProfileDto
     public string? About { get; set; }
 }
 
-public class CompanyReviewCreateDto
+public class CompanyReviewCreateDto : IFormulairePublic
 {
     // Les six notes sont sur cinq. Sans borne, une note de 10 000 sur une
     // seule ligne ecrase la moyenne de l'entreprise entiere — et la fiche
@@ -404,4 +404,11 @@ public class CompanyReviewCreateDto
 
     [Longueur(Limites.Nom), SansBalisage]
     public string? Location { get; set; }
+
+    // ── Anti-robots ──
+    // Invisible a l'ecran et hors du parcours au clavier : une personne
+    // ne peut pas remplir le premier, et met plus d'une seconde et demie
+    // a remplir le formulaire. Voir « Validation/AntiRobot.cs ».
+    public string? SiteWeb { get; set; }
+    public int? MsSaisie { get; set; }
 }

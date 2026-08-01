@@ -13,6 +13,7 @@ using lpdeBack.Data;
 using lpdeBack.Models;
 using lpdeBack.DTOs;
 using lpdeBack.Services;
+using Microsoft.AspNetCore.RateLimiting;
 
 namespace lpdeBack.Controllers;
 
@@ -204,6 +205,7 @@ public class CvController : ControllerBase
     // ═══ Generation par le modele de langage ═══
 
     [HttpPost("generate-ai")]
+    [EnableRateLimiting("ia")]
     public async Task<ActionResult<List<CvSectionCreateDto>>> GenerateWithAi(AiGenerateRequestDto? dto)
     {
         var user = await _context.Users.FindAsync(GetUserId());

@@ -9,6 +9,7 @@ using lpdeBack.Models;
 using lpdeBack.DTOs;
 using lpdeBack.Hubs;
 using lpdeBack.Services;
+using Microsoft.AspNetCore.RateLimiting;
 
 namespace lpdeBack.Controllers;
 
@@ -411,6 +412,7 @@ public class ApplicationsController : ControllerBase
     }
 
     [HttpPost]
+    [EnableRateLimiting("publication")]
     [Authorize(Roles = "Candidate")]
     public async Task<ActionResult<Application>> Create(ApplicationCreateDto dto)
     {

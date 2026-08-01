@@ -1,6 +1,8 @@
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
+using System.Threading.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
@@ -58,6 +60,113 @@ builder.Services.Configure<ApiBehaviorOptions>(options =>
         return new BadRequestObjectResult(new { message = premiere, erreurs });
     };
 });
+
+// ══════════════════════════════════════════════
+//  Limitation de debit
+//
+//  Il n'y en avait aucune. Le blocage apres cinq essais protege un
+//  compte connu, et le plafond horaire protege le solde de SMS ; tout
+//  le reste — inscriptions, mots de passe oublies, abonnements, avis,
+//  contributions de salaire, et surtout la generation de CV par IA,
+//  facturee au jeton a chaque appel — pouvait etre appele en boucle.
+//
+//  Les plafonds sont cales sur l'usage reel, pas sur la prudence : trop
+//  bas, ils bloqueraient un bureau entier derriere une seule adresse ;
+//  trop hauts, ils ne serviraient a rien. Ils comptent par adresse, sauf
+//  celui de l'IA qui compte par compte — c'est la personne qui coute.
+// ══════════════════════════════════════════════
+builder.Services.AddRateLimiter(options =>
+{
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+
+    // Le client lit « message » : sans cela, un refus arriverait vide et
+    // l'interface afficherait une erreur technique sans explication.
+    options.OnRejected = async (contexte, jeton) =>
+    {
+        var attente = contexte.Lease.TryGetMetadata(MetadataName.RetryAfter, out var d)
+            ? (int)d.TotalSeconds : 60;
+
+        contexte.HttpContext.Response.Headers.RetryAfter = attente.ToString();
+        contexte.HttpContext.Response.ContentType = "application/json";
+        await contexte.HttpContext.Response.WriteAsJsonAsync(new
+        {
+            message = $"Trop de tentatives depuis cet appareil. Réessayez dans {Math.Max(1, attente / 60)} minute"
+                      + (attente >= 120 ? "s." : "."),
+            secondesAAttendre = attente,
+        }, jeton);
+    };
+
+    // Garde-fou general : il ne vise pas l'usage, meme intensif, mais le
+    // moissonnage — vingt requetes par seconde soutenues ne viennent pas
+    // d'une personne qui consulte des offres.
+    options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(http =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            lpdeBack.Validation.AntiRobot.Client(http),
+            _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 1_200,
+                Window = TimeSpan.FromMinutes(1),
+            }));
+
+    // Tout ce qui touche a l'identite : connexion, inscription, code de
+    // second facteur, mot de passe oublie. Dix par minute laissent de la
+    // place aux fautes de frappe et a plusieurs personnes derriere une
+    // meme adresse, sans laisser derouler un dictionnaire.
+    options.AddPolicy("identite", http =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            lpdeBack.Validation.AntiRobot.Client(http),
+            _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 10,
+                Window = TimeSpan.FromMinutes(1),
+            }));
+
+    // L'abonnement a la lettre. Le double opt-in protege deja l'abonne —
+    // rien ne part tant qu'il n'a pas confirme — mais rien n'empechait de
+    // s'en servir pour noyer une victime sous des demandes de
+    // confirmation. Personne ne s'abonne cinq fois en une heure.
+    options.AddPolicy("abonnement", http =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            lpdeBack.Validation.AntiRobot.Client(http),
+            _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 5,
+                Window = TimeSpan.FromHours(1),
+            }));
+
+    // Ce qui se depose publiquement : candidatures, avis, contributions
+    // de salaire, signalements. Trente par heure couvrent largement une
+    // recherche d'emploi active — on ne postule pas a trente offres par
+    // heure en ecrivant a chacune.
+    options.AddPolicy("publication", http =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            lpdeBack.Validation.AntiRobot.Compte(http),
+            _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 30,
+                Window = TimeSpan.FromHours(1),
+            }));
+
+    // La generation par IA est la seule qui coute de l'argent a chaque
+    // appel. Elle se compte par compte et non par adresse : c'est la
+    // personne qu'on autorise, et changer d'adresse ne doit pas remettre
+    // le compteur a zero.
+    options.AddPolicy("ia", http =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            lpdeBack.Validation.AntiRobot.Compte(http),
+            _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 10,
+                Window = TimeSpan.FromHours(1),
+            }));
+});
+
+// Le filtre s'applique de lui-meme a tout formulaire qui declare les
+// deux champs : celui qu'on oublierait d'appeler a la main serait
+// precisement celui qu'on exploiterait.
+builder.Services.AddScoped<lpdeBack.Validation.AntiRobotFilter>();
+builder.Services.Configure<MvcOptions>(o =>
+    o.Filters.Add<lpdeBack.Validation.AntiRobotFilter>());
 
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
@@ -324,6 +433,10 @@ if (app.Environment.IsDevelopment())
 app.UseStaticFiles();
 app.UseCors("AllowAngular");
 app.UseMiddleware<lpdeBack.Middleware.MaintenanceMiddleware>();
+// Avant l'authentification : un flot de requetes doit etre arrete
+// avant qu'on ne depense a verifier chacune de leurs signatures.
+app.UseRateLimiter();
+
 app.UseAuthentication();
 app.UseAuthorization();
 app.MapHub<lpdeBack.Hubs.ChatHub>("/hubs/chat");

@@ -6,6 +6,7 @@ using Microsoft.EntityFrameworkCore;
 using lpdeBack.Data;
 using lpdeBack.Services;
 using lpdeBack.Validation;
+using Microsoft.AspNetCore.RateLimiting;
 
 namespace lpdeBack.Controllers;
 
@@ -35,6 +36,7 @@ public class NewsletterController : ControllerBase
 
     /// <summary>S'abonner. Rien ne part avant confirmation.</summary>
     [HttpPost("abonner")]
+    [EnableRateLimiting("abonnement")]
     public async Task<ActionResult<object>> Abonner([FromBody] AbonnementDto dto, CancellationToken ct)
     {
         // Un visiteur connecte n'a pas a ressaisir ce qu'on sait deja.
@@ -125,7 +127,7 @@ public class NewsletterController : ControllerBase
     }
 }
 
-public class AbonnementDto
+public class AbonnementDto : IFormulairePublic
 {
     [Required(ErrorMessage = "Indiquez votre adresse e-mail.")]
     [AdresseCourriel]
@@ -153,6 +155,13 @@ public class AbonnementDto
     /// </summary>
     [Parmi("Footer", "Page", "Inscription", "Import", "Admin")]
     public string? Source { get; set; }
+
+    // ── Anti-robots ──
+    // Invisible a l'ecran et hors du parcours au clavier : une personne
+    // ne peut pas remplir le premier, et met plus d'une seconde et demie
+    // a remplir le formulaire. Voir « Validation/AntiRobot.cs ».
+    public string? SiteWeb { get; set; }
+    public int? MsSaisie { get; set; }
 }
 
 public class JetonDto

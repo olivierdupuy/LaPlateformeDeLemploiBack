@@ -6,6 +6,7 @@ using lpdeBack.Data;
 using lpdeBack.Models;
 using System.ComponentModel.DataAnnotations;
 using lpdeBack.Validation;
+using Microsoft.AspNetCore.RateLimiting;
 
 namespace lpdeBack.Controllers;
 
@@ -130,6 +131,7 @@ public class SalariesController : ControllerBase
 
     /// <summary>Partager un salaire (contribue aux estimations).</summary>
     [HttpPost("contribute")]
+    [EnableRateLimiting("publication")]
     [Authorize]
     public async Task<IActionResult> Contribute(SalaryContributionDto dto)
     {
@@ -151,7 +153,7 @@ public class SalariesController : ControllerBase
     }
 }
 
-public class SalaryContributionDto
+public class SalaryContributionDto : IFormulairePublic
 {
     [Required(ErrorMessage = "Indiquez l'intitulé du poste.")]
     [StringLength(Limites.Ligne, MinimumLength = 2, ErrorMessage = "L'intitulé fait entre 2 et 200 caractères.")]
@@ -175,4 +177,11 @@ public class SalaryContributionDto
 
     [Longueur(Limites.Nom), SansBalisage]
     public string? ExperienceLevel { get; set; }
+
+    // ── Anti-robots ──
+    // Invisible a l'ecran et hors du parcours au clavier : une personne
+    // ne peut pas remplir le premier, et met plus d'une seconde et demie
+    // a remplir le formulaire. Voir « Validation/AntiRobot.cs ».
+    public string? SiteWeb { get; set; }
+    public int? MsSaisie { get; set; }
 }

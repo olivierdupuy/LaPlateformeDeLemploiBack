@@ -13,6 +13,7 @@ using lpdeBack.Data;
 using lpdeBack.Hubs;
 using lpdeBack.Services;
 using lpdeBack.Validation;
+using Microsoft.AspNetCore.RateLimiting;
 
 namespace lpdeBack.Controllers;
 
@@ -57,6 +58,7 @@ public class AuthController : ControllerBase
 
     /// <summary>Register a new user</summary>
     [HttpPost("register")]
+    [EnableRateLimiting("identite")]
     public async Task<ActionResult<AuthResponseDto>> Register(RegisterDto dto)
     {
         // Check if registration is allowed
@@ -113,6 +115,7 @@ public class AuthController : ControllerBase
     /// minutes, qui n'ouvre rien d'autre que l'ecran du code.
     /// </summary>
     [HttpPost("login")]
+    [EnableRateLimiting("identite")]
     public async Task<ActionResult<AuthResponseDto>> Login(LoginDto dto)
     {
         var user = await _userManager.FindByEmailAsync(dto.Email);
@@ -165,6 +168,7 @@ public class AuthController : ControllerBase
     /// premier, ce qui donnerait l'impression que rien ne marche.
     /// </summary>
     [HttpPost("2fa/renvoyer")]
+    [EnableRateLimiting("identite")]
     public async Task<ActionResult<object>> RenvoyerCode([FromBody] RenvoiDto dto)
     {
         var userId = _sessions.LireDefi(dto.ChallengeToken);
@@ -192,6 +196,7 @@ public class AuthController : ControllerBase
     /// il lui en reste.
     /// </summary>
     [HttpPost("2fa/verifier")]
+    [EnableRateLimiting("identite")]
     public async Task<ActionResult<AuthResponseDto>> VerifierDeuxFacteurs(DefiDeuxFacteursDto dto)
     {
         var userId = _sessions.LireDefi(dto.ChallengeToken);
@@ -262,6 +267,7 @@ public class AuthController : ControllerBase
     /// adresses inscrites, une par essai.
     /// </summary>
     [HttpPost("mot-de-passe-oublie")]
+    [EnableRateLimiting("identite")]
     public async Task<IActionResult> MotDePasseOublie(MotDePasseOublieDto dto)
     {
         var user = await _userManager.FindByEmailAsync(dto.Email ?? "");
@@ -285,6 +291,7 @@ public class AuthController : ControllerBase
 
     /// <summary>Fin du parcours : le nouveau mot de passe, et toutes les sessions coupees.</summary>
     [HttpPost("reinitialiser-mot-de-passe")]
+    [EnableRateLimiting("identite")]
     public async Task<IActionResult> ReinitialiserMotDePasse(ReinitialisationDto dto)
     {
         var user = await _userManager.FindByIdAsync(dto.UserId ?? "");
@@ -472,6 +479,7 @@ public class AuthController : ControllerBase
 
     /// <summary>SSO : connexion via un jeton Google Identity (One Tap / bouton Google).</summary>
     [HttpPost("google")]
+    [EnableRateLimiting("identite")]
     [AllowAnonymous]
     public async Task<ActionResult<AuthResponseDto>> GoogleSignIn(GoogleSignInDto dto)
     {
@@ -509,6 +517,7 @@ public class AuthController : ControllerBase
     /// secret de l'application ne quitte jamais le serveur.
     /// </summary>
     [HttpPost("linkedin")]
+    [EnableRateLimiting("identite")]
     [AllowAnonymous]
     public async Task<ActionResult<AuthResponseDto>> LinkedInSignIn(LinkedInDto dto)
     {
