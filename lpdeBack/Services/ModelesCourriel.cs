@@ -303,4 +303,95 @@ public static class ModelesCourriel
             """;
         return new Courriel(destinataire, $"{titre} — {Marque}", Envelopper(titre, corps), texte);
     }
+    // ══════════════════════════════════════
+    //  Lettre d'information
+    // ══════════════════════════════════════
+
+    /// <summary>
+    /// La confirmation d'abonnement.
+    ///
+    /// Elle part du canal transactionnel, pas de Brevo : quelqu'un qui
+    /// vient de saisir son adresse attend ce message dans la minute, et
+    /// c'est exactement ce que le transactionnel sait faire. Passer par la
+    /// file d'une campagne le ferait arriver quand la file serait vide.
+    /// </summary>
+    public static Courriel ConfirmationNewsletter(string destinataire, string? prenom,
+                                                  string lien, string lienDesinscription)
+    {
+        const string titre = "Confirmez votre abonnement";
+        var bonjour = string.IsNullOrWhiteSpace(prenom) ? "Bonjour," : $"Bonjour {E(prenom)},";
+        var corps = $"""
+            <p style="margin:0 0 12px">{bonjour}</p>
+            <p style="margin:0 0 12px">
+              Vous venez de demander a recevoir la lettre d'information de {Marque} :
+              les offres qui bougent, les metiers qui recrutent, et ce qui change sur la
+              plateforme.
+            </p>
+            <p style="margin:0 0 12px">
+              <strong>Un clic reste necessaire.</strong> Tant que vous ne l'avez pas fait,
+              nous ne vous enverrons rien — c'est ce qui garantit que personne ne peut
+              vous abonner a votre place.
+            </p>
+            <p style="margin:0;font-size:13px;color:#577177">
+              Ce n'etait pas vous ? Ignorez ce message, il ne se passera rien. Ou
+              <a href="{lienDesinscription}" style="color:#577177">retirez definitivement cette adresse</a>
+              pour qu'on cesse de vous la proposer.
+            </p>
+            """;
+        var texte = $"""
+            {bonjour.Replace("&#39;", "'")}
+
+            Vous venez de demander a recevoir la lettre d'information de {Marque}.
+            Confirmez en ouvrant ce lien :
+
+            {lien}
+
+            Tant que vous ne l'avez pas fait, nous ne vous enverrons rien.
+
+            Ce n'etait pas vous ? Ignorez ce message, il ne se passera rien. Ou
+            retirez definitivement cette adresse :
+
+            {lienDesinscription}
+
+            {Marque}
+            """;
+        return new Courriel(destinataire, $"{titre} — {Marque}",
+            Envelopper(titre, corps, "Confirmer mon abonnement", lien), texte);
+    }
+
+    /// <summary>
+    /// L'enveloppe d'une campagne.
+    ///
+    /// Volontairement plus sobre que celle des messages de securite : une
+    /// lettre d'information se lit d'un trait, et le corps y est ecrit par
+    /// une personne, pas par le code. L'enveloppe se contente de porter la
+    /// marque, la ligne d'apercu et le pied de desinscription.
+    /// </summary>
+    public static string EnveloppeNewsletter(string sujet, string apercu, string corps, string pied)
+    {
+        // Le texte d'apercu, cache mais lu par les messageries dans la liste
+        // des messages. Sans lui elles affichent les premiers mots du corps.
+        var preheader = string.IsNullOrWhiteSpace(apercu) ? "" : $"""
+            <div style="display:none;max-height:0;overflow:hidden;opacity:0">{apercu}</div>
+            """;
+
+        return $"""
+            <!doctype html>
+            <html lang="fr"><head><meta charset="utf-8" />
+            <meta name="viewport" content="width=device-width,initial-scale=1" />
+            <title>{E(sujet)}</title></head>
+            <body style="margin:0;padding:24px 12px;background:#ffecd1;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif">
+              {preheader}
+              <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%"
+                     style="max-width:600px;margin:0 auto;background:#ffffff;border:1px solid #ebdac1;border-radius:14px;overflow:hidden">
+                <tr><td style="padding:20px 32px;background:#001524;color:#ffecd1;font-size:15px;font-weight:600;
+                       letter-spacing:.02em">{Marque}</td></tr>
+                <tr><td style="padding:28px 32px;font-size:15px;line-height:1.7;color:#10272b">{corps}</td></tr>
+                <tr><td style="padding:18px 32px;border-top:1px solid #ebdac1;font-size:12px;line-height:1.6;color:#81999e">
+                  {pied}
+                </td></tr>
+              </table>
+            </body></html>
+            """;
+    }
 }

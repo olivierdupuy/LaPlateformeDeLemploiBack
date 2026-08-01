@@ -222,6 +222,13 @@ builder.Services.AddSingleton<lpdeBack.Services.IEmailSender, lpdeBack.Services.
 // reseau de plus pour chaque code envoye.
 builder.Services.AddSingleton<lpdeBack.Services.OvhSmsService>();
 builder.Services.AddScoped<lpdeBack.Services.DeuxFacteursSms>();
+// La lettre d'information passe par Brevo et non par le SMTP transactionnel :
+// expedier des milliers de messages depuis la boite qui porte aussi les mots
+// de passe oublies ruinerait la reputation de celle-ci, et les mots de passe
+// oublies cesseraient d'arriver avec le reste.
+builder.Services.AddSingleton<lpdeBack.Services.BrevoService>();
+builder.Services.AddScoped<lpdeBack.Services.NewsletterService>();
+builder.Services.AddHostedService<lpdeBack.Services.NewsletterSenderService>();
 builder.Services.AddScoped<lpdeBack.Services.JobImportService>();
 // En singleton : le cache de jetons France Travail n'a d'interet que s'il
 // survit a la requete qui l'a rempli.

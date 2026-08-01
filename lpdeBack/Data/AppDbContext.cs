@@ -30,6 +30,9 @@ public class AppDbContext : IdentityDbContext<AppUser>
     public DbSet<CompanyProfile> CompanyProfiles => Set<CompanyProfile>();
     public DbSet<JobEvent> JobEvents => Set<JobEvent>();
     public DbSet<UserSession> UserSessions => Set<UserSession>();
+    public DbSet<NewsletterSubscriber> NewsletterSubscribers => Set<NewsletterSubscriber>();
+    public DbSet<NewsletterCampaign> NewsletterCampaigns => Set<NewsletterCampaign>();
+    public DbSet<NewsletterDelivery> NewsletterDeliveries => Set<NewsletterDelivery>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -71,6 +74,29 @@ public class AppDbContext : IdentityDbContext<AppUser>
             // table a chaque appel.
             entity.HasIndex(s => s.Jti).IsUnique();
             entity.HasIndex(s => new { s.UserId, s.RevokedAt });
+        });
+
+        modelBuilder.Entity<NewsletterSubscriber>(entity =>
+        {
+            // Une adresse, un abonne. Sans cette unicite, un formulaire
+            // soumis deux fois creerait deux abonnements — donc deux copies
+            // de chaque message, et deux desinscriptions a faire.
+            entity.HasIndex(s => s.Email).IsUnique();
+            entity.HasIndex(s => s.UnsubscribeToken);
+            entity.HasIndex(s => new { s.Status, s.UnsubscribedAt });
+            entity.HasOne(s => s.User).WithMany().HasForeignKey(s => s.UserId).OnDelete(DeleteBehavior.SetNull);
+        });
+
+        modelBuilder.Entity<NewsletterDelivery>(entity =>
+        {
+            entity.HasOne(d => d.Campaign).WithMany(c => c.Deliveries)
+                  .HasForeignKey(d => d.CampaignId).OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne(d => d.Subscriber).WithMany()
+                  .HasForeignKey(d => d.SubscriberId).OnDelete(DeleteBehavior.Cascade);
+            // C'est cet index unique qui empeche d'ecrire deux fois a la meme
+            // personne quand un envoi reprend apres un arret.
+            entity.HasIndex(d => new { d.CampaignId, d.SubscriberId }).IsUnique();
+            entity.HasIndex(d => new { d.CampaignId, d.Status });
         });
 
         modelBuilder.Entity<Notification>(entity =>
