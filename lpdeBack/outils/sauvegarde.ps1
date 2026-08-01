@@ -55,7 +55,11 @@ $racine = Split-Path -Parent $PSScriptRoot
 # moment possible.
 $commun = Join-Path $env:ProgramData 'LaPlateformeDeLemploi'
 if (-not $Destination) { $Destination = Join-Path $commun 'sauvegardes' }
-if (-not $Fichiers)    { $Fichiers    = Join-Path $commun 'cv' }
+
+# Les documents deposes par les membres. Ils ne sont PAS dans la base :
+# une sauvegarde qui les oublierait ne restaurerait qu'une moitie de
+# service, et on ne s'en apercevrait qu'au moment de restaurer.
+if (-not $Fichiers)    { $Fichiers    = 'C:\Datas\Laplateformedelemploi\Documents' }
 
 $horodatage = Get-Date -Format 'yyyyMMdd-HHmmss'
 $dossier = Join-Path $Destination $horodatage

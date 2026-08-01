@@ -64,6 +64,15 @@ public class DepotFichiersTests
     }
 
     [Fact]
+    public void La_racine_est_hors_du_dossier_de_l_application()
+    {
+        // Le deploiement se fait par « msdeploy -verb:sync », qui rend la
+        // destination identique a la source : un document range chez
+        // l'application disparaitrait a la mise en ligne suivante.
+        Assert.Equal(@"C:\Datas\Laplateformedelemploi\Documents", DepotFichiers.RacineParDefaut);
+    }
+
+    [Fact]
     public void Le_prefixe_enregistre_ne_change_pas()
     {
         // La base contient des milliers de chemins batis sur ce prefixe.

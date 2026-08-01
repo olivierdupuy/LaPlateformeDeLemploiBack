@@ -481,7 +481,7 @@ try
 {
     using var portee = app.Services.CreateScope();
     portee.ServiceProvider.GetRequiredService<lpdeBack.Services.DepotFichiers>()
-          .RapatrierDepuisWwwroot(app.Environment);
+          .Ranger(app.Environment);
 }
 catch (Exception ex)
 {
