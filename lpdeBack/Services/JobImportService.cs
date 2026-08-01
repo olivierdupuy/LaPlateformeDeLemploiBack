@@ -931,6 +931,24 @@ public class JobImportService
         return (aMin, aMax);
     }
 
+    /// <summary>
+    /// Version de l'analyseur de salaires.
+    ///
+    /// À incrémenter dès que ParseFtSalary change de comportement. Le
+    /// service de fond compare cette valeur à celle enregistrée en base et
+    /// recalcule tout le corpus quand elles diffèrent.
+    ///
+    /// Sans ce numéro, une correction de l'analyseur ne valait que pour les
+    /// offres importées ensuite : les anciennes gardaient indéfiniment la
+    /// valeur fausse, et seul un bouton d'administration — exigeant des
+    /// identifiants que personne n'a sous la main — pouvait les reprendre.
+    /// Le code et les données divergeaient donc en silence.
+    /// </summary>
+    public const int VersionAnalyseSalaire = 2;
+
+    /// <summary>La clé qui garde en base la version déjà appliquée.</summary>
+    public const string CleVersionSalaire = "reparse_salaires_version";
+
     // Rétro-remplit le salaire chiffré des offres importées déjà en base (parcours par curseur d'Id).
     public async Task<int> ReparseSalariesAsync(bool force = false, CancellationToken ct = default)
     {
@@ -940,9 +958,14 @@ public class JobImportService
         {
             // force = true : recalcule tout (corrige d'anciennes valeurs) ;
             // sinon : ne traite que les offres sans salaire chiffré (rapide au démarrage).
+            // Le filtre ne testait que MinSalary : une offre « jusqu'a X »,
+            // dont seule la borne haute est connue, gardait donc un
+            // MinSalary nul et se faisait reprendre a chaque demarrage —
+            // reecrite indefiniment pour le meme resultat, et comptee comme
+            // « mise a jour » dans le journal.
             var batch = await _context.JobOffers
                 .Where(j => j.ExternalSource != null && j.Salary != null && j.Salary != ""
-                    && (force || j.MinSalary == null) && j.Id > lastId)
+                    && (force || (j.MinSalary == null && j.MaxSalary == null)) && j.Id > lastId)
                 .OrderBy(j => j.Id).Take(take).ToListAsync(ct);
             if (batch.Count == 0) break;
             lastId = batch[^1].Id;
