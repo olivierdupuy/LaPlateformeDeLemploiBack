@@ -52,11 +52,24 @@ public sealed class EmailSender : IEmailSender
         _ssl = !bool.TryParse(config["Email:Ssl"], out var s) || s;
     }
 
-    public bool EstConfigure => !string.IsNullOrWhiteSpace(_hote);
+    /// <summary>
+    /// Le serveur et l'identifiant, pas seulement le serveur.
+    ///
+    /// L'hote figure dans appsettings — ce n'est pas un secret, et il ne
+    /// change pas. Seuls l'identifiant et le mot de passe viennent des
+    /// secrets. Se contenter de l'hote rendrait donc l'expedition
+    /// « configuree » sur toute machine de developpement : les messages
+    /// partiraient vers un serveur qui les refuse, au lieu d'etre ecrits
+    /// au journal ou l'on peut suivre un lien de reinitialisation.
+    /// </summary>
+    public bool EstConfigure =>
+        !string.IsNullOrWhiteSpace(_hote) && !string.IsNullOrWhiteSpace(_identifiant);
 
     public string Etat => EstConfigure
-        ? $"{_hote}:{_port} ({(_ssl ? "chiffre" : "en clair")}), expediteur {_expediteur}"
-        : "aucun serveur configuré : les messages sont écrits au journal";
+        ? $"{_hote}:{_port} ({(_ssl ? "STARTTLS" : "en clair")}), compte {_identifiant}, expediteur {_expediteur}"
+        : string.IsNullOrWhiteSpace(_hote)
+            ? "aucun serveur configuré : les messages sont écrits au journal"
+            : $"{_hote} est renseigné mais aucun compte ne l'est : les messages sont écrits au journal";
 
     public async Task<bool> Envoyer(Courriel message, CancellationToken ct = default)
     {
@@ -80,13 +93,12 @@ public sealed class EmailSender : IEmailSender
                 Timeout = 20_000,
             };
 
-            // Un serveur qui n'exige pas d'authentification existe (relais
-            // interne) : ne pas lui presenter d'identifiants vides.
-            if (!string.IsNullOrWhiteSpace(_identifiant))
-            {
-                client.UseDefaultCredentials = false;
-                client.Credentials = new NetworkCredential(_identifiant, _motDePasse);
-            }
+            // UseDefaultCredentials doit etre remis a faux avant d'assigner
+            // Credentials : dans l'ordre inverse, il ecrase ce qu'on vient
+            // de poser et le serveur repond « authentification requise »
+            // sans qu'on comprenne pourquoi.
+            client.UseDefaultCredentials = false;
+            client.Credentials = new NetworkCredential(_identifiant, _motDePasse);
 
             using var mail = new MailMessage
             {
