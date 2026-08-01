@@ -384,12 +384,24 @@ builder.Services.AddScoped<lpdeBack.Services.NewsletterService>();
 // memoise l'equipe le temps d'un appel, pas au-dela.
 builder.Services.AddScoped<lpdeBack.Services.PerimetreRecruteur>();
 
+// Le rangement des fichiers deposes, hors de wwwroot. Singleton : il ne
+// porte qu'un chemin, et le demarrage s'en sert avant toute requete.
+builder.Services.AddSingleton<lpdeBack.Services.DepotFichiers>();
+
+// Le filet : plus aucune exception ne sort en page brute.
+builder.Services.AddExceptionHandler<lpdeBack.Middleware.FiletErreur>();
+builder.Services.AddProblemDetails();
+
 builder.Services.AddHostedService<lpdeBack.Services.NewsletterSenderService>();
 
 // La redaction hebdomadaire de la lettre. Elle ne fait que deposer des
 // brouillons : c'est l'expediteur ci-dessus qui envoie, et lui seul, sur
 // un clic humain.
 builder.Services.AddHostedService<lpdeBack.Services.RedactionNewsletterService>();
+
+// Tient les durees de conservation annoncees dans les mentions legales.
+// A blanc tant que « purge_active » vaut false.
+builder.Services.AddHostedService<lpdeBack.Services.PurgeService>();
 builder.Services.AddScoped<lpdeBack.Services.JobImportService>();
 // En singleton : le cache de jetons France Travail n'a d'interet que s'il
 // survit a la requete qui l'a rempli.
@@ -451,6 +463,33 @@ if (app.Environment.IsDevelopment())
     app.UseSwagger();
     app.UseSwaggerUI();
 }
+else
+{
+    // En production, le filet : reponse propre au visiteur, trace
+    // complete au journal, et une reference qui relie les deux.
+    app.UseExceptionHandler();
+}
+
+// Les fichiers deposes ont quitte wwwroot ; ce rapatriement s'assure
+// qu'aucun n'y reste, y compris ceux televerses avant le correctif.
+using (var portee = app.Services.CreateScope())
+{
+    portee.ServiceProvider.GetRequiredService<lpdeBack.Services.DepotFichiers>()
+          .RapatrierDepuisWwwroot(app.Environment);
+}
+
+// Ceinture et bretelles : meme si un fichier reapparaissait sous
+// « /uploads », il ne serait pas servi. La fuite ne se rouvrira pas par
+// distraction.
+app.Use(async (ctx, suite) =>
+{
+    if (ctx.Request.Path.StartsWithSegments("/uploads"))
+    {
+        ctx.Response.StatusCode = StatusCodes.Status404NotFound;
+        return;
+    }
+    await suite();
+});
 
 app.UseStaticFiles();
 app.UseCors("AllowAngular");
@@ -556,6 +595,21 @@ using (var scope = app.Services.CreateScope())
         ("legal_conservation_compte", "2 ans apres la derniere connexion", "Confidentialite — conservation d'un compte inactif"),
         ("legal_conservation_candidatures", "2 ans apres le dernier contact, conformement a la recommandation de la CNIL", "Confidentialite — conservation des candidatures"),
         ("legal_conservation_journal", "12 mois", "Confidentialite — conservation du journal d'administration"),
+
+        // Les durees ci-dessus sont annoncees en toutes lettres aux
+        // visiteurs ; celles-ci sont ce que la machine applique. Elles
+        // doivent dire la meme chose : une mention legale qu'aucun code
+        // ne tient est une phrase, pas un engagement.
+        //
+        // « purge_active » reste a false : mis en service, le nettoyage
+        // effacerait des comptes des la premiere nuit. Tant qu'il vaut
+        // false, il compte et journalise ce qu'il ferait sans y toucher.
+        // On lit les chiffres dans le journal, puis on l'autorise.
+        ("purge_active", "false", "Conservation — appliquer réellement la purge (sinon, elle tourne à blanc)"),
+        ("purge_compte_mois", "24", "Conservation — fermeture d'un compte après N mois sans connexion"),
+        ("purge_preavis_jours", "60", "Conservation — préavis envoyé N jours avant la fermeture"),
+        ("purge_candidatures_mois", "24", "Conservation — effacement des candidatures après N mois"),
+        ("purge_journal_mois", "12", "Conservation — effacement du journal d'administration après N mois"),
     };
 
     var clesExistantes = db.PlatformSettings.Select(s => s.Key).ToHashSet();

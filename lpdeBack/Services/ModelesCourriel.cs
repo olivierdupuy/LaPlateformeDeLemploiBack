@@ -282,6 +282,95 @@ public static class ModelesCourriel
             Envelopper(titre, corps, "Ouvrir la page Securite", lienSecurite), texte);
     }
 
+    /// <summary>
+    /// Previent qu'un compte inactif sera ferme, et comment l'eviter.
+    ///
+    /// Le geste demande est le plus simple possible : se connecter. Pas
+    /// de lien a cliquer, pas de formulaire — une seule connexion repousse
+    /// l'echeance de deux ans.
+    /// </summary>
+    public static Courriel CompteInactif(string destinataire, string prenom, DateTime echeance)
+    {
+        const string titre = "Votre compte sera ferme faute d'activite";
+        var quand = echeance.ToString("d MMMM yyyy", new System.Globalization.CultureInfo("fr-FR"));
+
+        var corps = $"""
+            <p style="margin:0 0 12px">Bonjour {E(prenom)},</p>
+            <p style="margin:0 0 12px">
+              Nous n'avons pas vu votre compte depuis pres de deux ans. Nous ne conservons
+              pas les comptes inactifs au-dela de ce delai : le votre sera efface le
+              <strong>{E(quand)}</strong>, avec vos candidatures et votre CV.
+            </p>
+            <p style="margin:0 0 12px">
+              Pour le garder, il suffit de vous connecter une fois. Rien d'autre a faire.
+            </p>
+            <p style="margin:0">
+              Si vous preferez le laisser partir, vous n'avez rien a faire non plus.
+            </p>
+            """;
+        var texte = $"""
+            Bonjour {prenom},
+
+            Nous n'avons pas vu votre compte depuis pres de deux ans. Il sera
+            efface le {quand}, avec vos candidatures et votre CV.
+
+            Pour le garder, connectez-vous une fois. Rien d'autre a faire.
+
+            Si vous preferez le laisser partir, vous n'avez rien a faire non plus.
+
+            {Marque}
+            """;
+        return new Courriel(destinataire, $"{titre} — {Marque}", Envelopper(titre, corps), texte);
+    }
+
+    /// <summary>
+    /// Confirme l'effacement d'un compte, a l'adresse qui vient de le
+    /// quitter.
+    ///
+    /// C'est le dernier message que cette adresse recevra, et le seul
+    /// moyen pour son titulaire d'apprendre qu'on a efface son compte
+    /// s'il n'en est pas l'auteur.
+    /// </summary>
+    public static Courriel CompteEfface(string destinataire, string prenom, int fichiers)
+    {
+        const string titre = "Votre compte a ete efface";
+        var mention = fichiers > 0
+            ? "Votre CV a ete supprime de nos serveurs."
+            : "Aucun fichier n'etait conserve pour ce compte.";
+
+        var corps = $"""
+            <p style="margin:0 0 12px">Bonjour {E(prenom)},</p>
+            <p style="margin:0 0 12px">
+              Votre compte vient d'etre efface, ainsi que vos candidatures, vos recherches
+              enregistrees, vos alertes et vos sections de CV. {E(mention)}
+            </p>
+            <p style="margin:0 0 12px">
+              Les avis d'entreprise et les salaires que vous aviez partages restent en
+              ligne, mais ils ne portent plus votre nom.
+            </p>
+            <p style="margin:0">
+              Cette operation est definitive : nous ne pouvons pas la defaire. Si vous
+              n'en etes pas l'auteur, ecrivez-nous sans tarder.
+            </p>
+            """;
+        var texte = $"""
+            Bonjour {prenom},
+
+            Votre compte vient d'etre efface, ainsi que vos candidatures, vos
+            recherches enregistrees, vos alertes et vos sections de CV.
+            {mention}
+
+            Les avis d'entreprise et les salaires que vous aviez partages restent
+            en ligne, mais ils ne portent plus votre nom.
+
+            Cette operation est definitive. Si vous n'en etes pas l'auteur,
+            ecrivez-nous sans tarder.
+
+            {Marque}
+            """;
+        return new Courriel(destinataire, $"{titre} — {Marque}", Envelopper(titre, corps), texte);
+    }
+
     /// <summary>Message de controle, declenche depuis l'administration.</summary>
     public static Courriel Essai(string destinataire)
     {

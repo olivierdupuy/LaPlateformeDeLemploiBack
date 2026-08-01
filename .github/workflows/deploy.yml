@@ -22,6 +22,13 @@ jobs:
       - name: Restore dependencies
         run: dotnet restore lpdeBack/lpdeBack.csproj
 
+      # Avant de publier, pas apres. Un deploiement qui compile mais dont
+      # le filtrage des chemins de fichiers est casse mettrait les CV a
+      # nouveau a portee de main : c'est exactement ce que ces tests
+      # gardent.
+      - name: Tests
+        run: dotnet test lpdeBack.Tests/lpdeBack.Tests.csproj -c Release --nologo
+
       - name: Publish
         run: |
           dotnet publish lpdeBack/lpdeBack.csproj -c Release -o publish --no-restore

@@ -29,7 +29,13 @@ public class MaintenanceMiddleware
             var path = context.Request.Path.Value ?? "";
 
             // Allow admin API calls and settings endpoint (so admin can disable maintenance)
+            //
+            // La sonde de sante passe aussi : c'est pendant une
+            // maintenance qu'on veut le plus savoir si la base repond,
+            // et une surveillance aveugle pendant l'intervention ne sert
+            // a rien.
             if (path.StartsWith("/api/admin") ||
+                path.StartsWith("/api/sante") ||
                 path.StartsWith("/api/auth/login") ||
                 path.StartsWith("/api/auth/me") ||
                 path.StartsWith("/hubs"))

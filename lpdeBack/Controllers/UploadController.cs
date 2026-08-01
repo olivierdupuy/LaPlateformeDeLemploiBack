@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
 using System.Security.Claims;
 using lpdeBack.Models;
+using lpdeBack.Services;
 
 namespace lpdeBack.Controllers;
 
@@ -12,12 +13,12 @@ namespace lpdeBack.Controllers;
 public class UploadController : ControllerBase
 {
     private readonly UserManager<AppUser> _userManager;
-    private readonly IWebHostEnvironment _env;
+    private readonly DepotFichiers _depot;
 
-    public UploadController(UserManager<AppUser> userManager, IWebHostEnvironment env)
+    public UploadController(UserManager<AppUser> userManager, DepotFichiers depot)
     {
         _userManager = userManager;
-        _env = env;
+        _depot = depot;
     }
 
     [HttpPost("resume")]
@@ -33,19 +34,34 @@ public class UploadController : ControllerBase
         if (ext != ".pdf")
             return BadRequest("Seuls les fichiers PDF sont acceptes.");
 
+        // Le nom du fichier ne suffit pas a dire ce qu'il contient. On
+        // lit l'en-tete : un vrai PDF commence par « %PDF- ». Cela ne
+        // remplace pas un antivirus, mais ferme la porte aux fichiers
+        // simplement renommes.
+        await using (var controle = file.OpenReadStream())
+        {
+            var entete = new byte[5];
+            var lus = await controle.ReadAsync(entete);
+            if (lus < 5 || entete[0] != 0x25 || entete[1] != 0x50 || entete[2] != 0x44 || entete[3] != 0x46 || entete[4] != 0x2D)
+                return BadRequest("Ce fichier n'est pas un PDF, quel que soit son nom.");
+        }
+
         var userId = User.FindFirstValue(ClaimTypes.NameIdentifier)!;
-        var uploadsDir = Path.Combine(_env.WebRootPath ?? Path.Combine(Directory.GetCurrentDirectory(), "wwwroot"), "uploads", "resumes");
-        Directory.CreateDirectory(uploadsDir);
+
+        // Les depots precedents de ce membre s'en vont : un nouveau CV
+        // portait un nouveau nom sans effacer l'ancien, et toutes les
+        // versions restaient lisibles.
+        _depot.EffacerTousDe(userId);
 
         var fileName = $"{userId}_{DateTime.UtcNow:yyyyMMddHHmmss}.pdf";
-        var filePath = Path.Combine(uploadsDir, fileName);
+        var filePath = _depot.Destination(fileName);
 
         using (var stream = new FileStream(filePath, FileMode.Create))
         {
             await file.CopyToAsync(stream);
         }
 
-        var url = $"/uploads/resumes/{fileName}";
+        var url = DepotFichiers.Prefixe + fileName;
 
         // Update user's ResumeUrl
         var user = await _userManager.FindByIdAsync(userId);
