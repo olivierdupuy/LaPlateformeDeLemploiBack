@@ -40,6 +40,7 @@ jobs:
           LINKEDIN_CLIENT_SECRET: ${{ secrets.LINKEDIN_CLIENT_SECRET }}
           OVH_APPLICATION_SECRET: ${{ secrets.OVH_APPLICATION_SECRET }}
           OVH_CONSUMER_KEY: ${{ secrets.OVH_CONSUMER_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
           $appSettings = Get-Content "publish/appsettings.json" | ConvertFrom-Json
           # La cle de signature JWT ne doit jamais venir du depot : quiconque la lit
@@ -56,10 +57,17 @@ jobs:
           }
           $appSettings.Jwt.Key = $jwtKey
           $appSettings.ConnectionStrings.DefaultConnection = "${{ secrets.DB_CONNECTION_STRING }}"
-          # Cle du modele de langage (Mistral). La section s'appelle « Ai » depuis
-          # que le fournisseur est configurable : viser « OpenAI » ne mettait plus
-          # la cle nulle part, et l'analyse de CV repondait 503 en production.
-          if ($appSettings.Ai) { $appSettings.Ai.ApiKey = "${{ secrets.MISTRAL_API_KEY }}" }
+          # Cle du modele de langage. La section s'appelle « Ai » depuis que le
+          # fournisseur est configurable : viser « OpenAI » ne mettait plus la
+          # cle nulle part, et l'analyse de CV repondait 503 en production.
+          # Passee par l'environnement : une cle Anthropic contient des tirets
+          # et un prefixe, et rien ne garantit qu'elle n'aura jamais de $.
+          if ($appSettings.Ai) {
+            $appSettings.Ai.ApiKey = $env:ANTHROPIC_API_KEY
+            if ([string]::IsNullOrWhiteSpace($env:ANTHROPIC_API_KEY)) {
+              Write-Warning "Secret ANTHROPIC_API_KEY absent : l'analyse de CV et la redaction assistee repondront 503."
+            }
+          }
           if ($appSettings.Firebase) { $appSettings.Firebase.ServerKey = "${{ secrets.FIREBASE_SERVER_KEY }}" }
           if ($appSettings.FranceTravail) {
             $appSettings.FranceTravail.ClientId = "${{ secrets.FRANCETRAVAIL_CLIENT_ID }}"

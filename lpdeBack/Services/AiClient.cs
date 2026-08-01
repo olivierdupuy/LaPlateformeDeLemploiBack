@@ -82,6 +82,21 @@ public class AiClient
     private bool EstOllama =>
         string.Equals(_options.Api, "ollama", StringComparison.OrdinalIgnoreCase);
 
+    /// <summary>
+    /// Parle-t-on a Claude ?
+    ///
+    /// L'API d'Anthropic ne se glisse pas dans le moule d'OpenAI, et quatre
+    /// details la distinguent — chacun suffisant a faire echouer l'appel :
+    ///   - la consigne systeme est un parametre a part, pas un message de
+    ///     role « system » ;
+    ///   - l'authentification passe par « x-api-key », pas par
+    ///     « Authorization: Bearer » ;
+    ///   - « max_tokens » est obligatoire, l'omettre vaut un 400 ;
+    ///   - la reponse arrive en blocs de contenu, pas en « choices ».
+    /// </summary>
+    private bool EstAnthropic =>
+        string.Equals(_options.Api, "anthropic", StringComparison.OrdinalIgnoreCase);
+
     public string Model => _options.Model;
 
     public async Task<AiResult> ChatAsync(
@@ -97,7 +112,17 @@ public class AiClient
 
         var client = _factory.CreateClient(HttpClientName);
 
-        if (!string.IsNullOrWhiteSpace(_options.ApiKey))
+        if (EstAnthropic && !string.IsNullOrWhiteSpace(_options.ApiKey))
+        {
+            // Anthropic ignore « Authorization » et repond 401 : la cle se
+            // presente dans son propre en-tete, accompagnee de la version
+            // du contrat — sans laquelle l'API refuse aussi de repondre.
+            client.DefaultRequestHeaders.Remove("x-api-key");
+            client.DefaultRequestHeaders.Add("x-api-key", _options.ApiKey);
+            client.DefaultRequestHeaders.Remove("anthropic-version");
+            client.DefaultRequestHeaders.Add("anthropic-version", "2023-06-01");
+        }
+        else if (!string.IsNullOrWhiteSpace(_options.ApiKey))
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", _options.ApiKey);
         else if (!string.IsNullOrWhiteSpace(_options.Username))
         {
@@ -116,7 +141,22 @@ public class AiClient
         var body = new Dictionary<string, object?>();
         string url;
 
-        if (EstOllama)
+        if (EstAnthropic)
+        {
+            url = racine + "/messages";
+            body["model"] = _options.Model;
+            // La consigne systeme est un parametre, pas un message : passee
+            // en message de role « system », Anthropic la refuse.
+            body["system"] = jsonMode
+                ? systemPrompt + "\n\nRepondez uniquement par du JSON valide, " +
+                  "sans texte avant ni apres, et sans bloc de code."
+                : systemPrompt;
+            body["messages"] = new object[] { new { role = "user", content = userPrompt } };
+            body["temperature"] = temperature;
+            // Obligatoire ici, contrairement a OpenAI.
+            body["max_tokens"] = maxTokens;
+        }
+        else if (EstOllama)
         {
             url = racine + "/api/chat";
             body["model"] = _options.Model;
@@ -169,15 +209,39 @@ public class AiClient
             var json = await response.Content.ReadAsStringAsync(cancellationToken);
             using var doc = JsonDocument.Parse(json);
 
-            // OpenAI enveloppe la reponse dans « choices[0].message » ; Ollama la
-            // pose directement dans « message ».
-            var content = EstOllama
-                ? doc.RootElement.TryGetProperty("message", out var m)
-                    ? m.TryGetProperty("content", out var c) ? c.GetString() : null
-                    : null
-                : doc.RootElement.TryGetProperty("choices", out var choices) && choices.GetArrayLength() > 0
-                    ? choices[0].GetProperty("message").GetProperty("content").GetString()
-                    : null;
+            // Trois enveloppes pour la meme chose : OpenAI met la reponse dans
+            // « choices[0].message », Ollama dans « message », Anthropic dans
+            // un tableau de blocs dont on prend le premier bloc de texte.
+            string? content;
+            if (EstAnthropic)
+            {
+                content = null;
+                if (doc.RootElement.TryGetProperty("content", out var blocs)
+                    && blocs.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var bloc in blocs.EnumerateArray())
+                    {
+                        if (bloc.TryGetProperty("type", out var t) && t.GetString() == "text"
+                            && bloc.TryGetProperty("text", out var txt))
+                        {
+                            content = txt.GetString();
+                            break;
+                        }
+                    }
+                }
+            }
+            else if (EstOllama)
+            {
+                content = doc.RootElement.TryGetProperty("message", out var m)
+                    && m.TryGetProperty("content", out var c) ? c.GetString() : null;
+            }
+            else
+            {
+                content = doc.RootElement.TryGetProperty("choices", out var choices)
+                    && choices.GetArrayLength() > 0
+                        ? choices[0].GetProperty("message").GetProperty("content").GetString()
+                        : null;
+            }
 
             if (content is null)
                 return AiResult.Failure("Reponse inexploitable du modele.", 502);
@@ -185,7 +249,7 @@ public class AiClient
             if (string.IsNullOrWhiteSpace(content))
                 return AiResult.Failure("Le modele a renvoye une reponse vide.", 502);
 
-            return AiResult.Success(StripCodeFences(content));
+            return AiResult.Success(jsonMode ? IsolerJson(StripCodeFences(content)) : StripCodeFences(content));
         }
         catch (TaskCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
@@ -203,6 +267,31 @@ public class AiClient
             _logger.LogWarning(ex, "Modele {Model} : reponse illisible.", _options.Model);
             return AiResult.Failure("Reponse illisible du modele.", 502);
         }
+    }
+
+    /// <summary>
+    /// Ne garde que le JSON, quand c'est du JSON qu'on attend.
+    ///
+    /// OpenAI et Ollama ont un mode qui garantit une reponse JSON pure.
+    /// Anthropic n'en a pas : on le demande dans la consigne, ce qui suffit
+    /// presque toujours, mais « Voici le resultat : { … } » reste possible.
+    /// Une phrase de politesse en tete faisait alors echouer la lecture de
+    /// tout le document. On coupe donc a la premiere accolade ou au premier
+    /// crochet, et a leur dernier repondant.
+    ///
+    /// Sans effet quand la reponse est deja propre : c'est un filet, pas un
+    /// traitement.
+    /// </summary>
+    private static string IsolerJson(string contenu)
+    {
+        var t = contenu.Trim();
+        if (t.Length == 0 || t[0] is '{' or '[') return t;
+
+        var debut = t.IndexOfAny(new[] { '{', '[' });
+        if (debut < 0) return t;
+
+        var fin = t.LastIndexOfAny(new[] { '}', ']' });
+        return fin > debut ? t[debut..(fin + 1)] : t[debut..];
     }
 
     /// <summary>Retire l'encadrement ```json … ``` que certains modeles ajoutent.</summary>

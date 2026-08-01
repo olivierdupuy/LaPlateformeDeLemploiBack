@@ -1,0 +1,83 @@
+#!/usr/bin/env sh
+#
+# Refuse de commiter un secret ecrit dans appsettings.json.
+#
+# Ce depot est public. Trois fois dans la meme journee, une cle d'API ou un
+# mot de passe s'est retrouve dans ce fichier — a chaque fois rattrape avant
+# le commit, a chaque fois par hasard. Un robot qui scrute GitHub trouve un
+# prefixe « sk-ant- » en quelques minutes, et la facture suit.
+#
+# Le fichier documente pourtant la regle en tete de chaque section. La regle
+# ne suffit pas : c'est le processus qu'il faut changer.
+#
+# Pour installer ce crochet :  git config core.hooksPath .githooks
+
+FICHIER="lpdeBack/appsettings.json"
+
+# Rien a verifier si le fichier n'est pas dans ce commit.
+git diff --cached --name-only | grep -qx "$FICHIER" || exit 0
+
+# On inspecte la version indexee, pas celle du disque : c'est elle qui part.
+CONTENU=$(git show ":$FICHIER" 2>/dev/null) || exit 0
+
+FAUTIFS=$(printf '%s' "$CONTENU" | python -c '
+import json, sys
+
+# Les champs qui ne doivent jamais porter de valeur ici. Hote, expediteur,
+# nom de service et identifiants publics n en font pas partie : ils ne sont
+# pas secrets et changent la lecture du fichier quand on les retire.
+INTERDITS = {
+    "Jwt": ["Key"],
+    "Ai": ["ApiKey", "Password"],
+    "Email": ["Password", "User"],
+    "Ovh": ["ApplicationKey", "ApplicationSecret", "ConsumerKey"],
+    "LinkedIn": ["ClientId", "ClientSecret"],
+    "Google": ["ClientId"],
+    "FranceTravail": ["ClientId", "ClientSecret"],
+    "Firebase": ["ServerKey"],
+}
+
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+
+for section, champs in INTERDITS.items():
+    s = d.get(section) or {}
+    if not isinstance(s, dict):
+        continue
+    for c in champs:
+        v = s.get(c)
+        if isinstance(v, str) and v.strip():
+            print(f"  {section}:{c}  ({len(v.strip())} caracteres)")
+
+# La chaine de connexion locale est versionnee a dessein : « (localdb) » avec
+# Trusted_Connection ne porte aucun identifiant. Seule celle qui contient un
+# mot de passe pose probleme — celle de production, qui vient d un secret.
+cs = (d.get("ConnectionStrings") or {}).get("DefaultConnection") or ""
+if isinstance(cs, str) and ("password=" in cs.lower() or "pwd=" in cs.lower()):
+    print("  ConnectionStrings:DefaultConnection  (contient un mot de passe)")
+')
+
+[ -z "$FAUTIFS" ] && exit 0
+
+cat >&2 <<AVERTISSEMENT
+
+  ✗ Commit refuse : des secrets figurent dans $FICHIER
+
+$FAUTIFS
+
+  Ce depot est public. Une cle publiee est utilisee dans l'heure.
+
+  A la place, depuis le dossier du projet :
+
+      dotnet user-secrets set "Section:Champ" "la valeur"
+
+  et pour la production, un secret de depot :
+
+      gh secret set NOM_DU_SECRET
+
+  Si vous savez ce que vous faites :  git commit --no-verify
+
+AVERTISSEMENT
+exit 1
