@@ -225,7 +225,13 @@ public class AuthController : ControllerBase
             // second facteur serait le seul endroit ou l'on peut essayer un
             // million de combinaisons a six chiffres sans etre inquiete.
             await _userManager.AccessFailedAsync(user);
-            return Unauthorized(new { message = "Code invalide. Saisissez le code affiché par votre application, ou l'un de vos codes de secours." });
+
+            // Renvoyer a une application d'authentification quelqu'un qui
+            // attend un SMS le laisse chercher un ecran qu'il n'a pas.
+            var ou = user.TwoFactorMethod == "Sms"
+                ? "le code reçu par SMS"
+                : "le code affiché par votre application";
+            return Unauthorized(new { message = $"Code invalide. Saisissez {ou}, ou l'un de vos codes de secours." });
         }
 
         await _userManager.ResetAccessFailedCountAsync(user);
@@ -645,7 +651,12 @@ public class AuthController : ControllerBase
         if (methode == "Sms")
         {
             reponse.TwoFactorTarget = OvhSmsService.Masquer(user.PhoneNumber);
-            var r = await _sms.Envoyer(user);
+
+            // D'office : c'est le serveur qui decide cet envoi, pas un
+            // bouton actionne en boucle. Le brider revenait a fermer la
+            // porte a qui vient d'installer le second facteur — le SMS de
+            // verification du numero datait de moins d'une minute.
+            var r = await _sms.Envoyer(user, dOffice: true);
             reponse.TwoFactorMessage = r.Parti
                 ? r.Message
                 : $"{r.Message} Utilisez l'un de vos codes de secours.";

@@ -56,8 +56,22 @@ public class DeuxFacteursSms
     /// <summary>
     /// Fabrique un code et l'expedie au numero donne — celui du compte,
     /// ou celui qu'on est en train de verifier.
+    ///
+    /// <paramref name="dOffice"/> distingue l'envoi que le serveur decide
+    /// de celui qu'on lui reclame. Le delai entre deux envois est fait
+    /// pour brider un bouton « Renvoyer » actionne en boucle ; l'oppose a
+    /// l'ouverture d'un defi rendait la connexion impossible. Le cas se
+    /// produisait a coup sur : on active le second facteur — un SMS part
+    /// pour verifier le numero — puis on se reconnecte dans la minute, et
+    /// le code de connexion ne partait pas. Pire, l'activation change le
+    /// tampon de securite, donc le code recu juste avant etait mort : il
+    /// ne restait qu'un code de secours a bruler pour rentrer chez soi.
+    ///
+    /// L'envoi d'office ne franchit que ce delai. Le plafond horaire, lui,
+    /// tient toujours : un mot de passe vole ne doit pas permettre de
+    /// harceler un telephone en ouvrant des defis a la chaine.
     /// </summary>
-    public async Task<Resultat> Envoyer(AppUser user, string? numero = null)
+    public async Task<Resultat> Envoyer(AppUser user, string? numero = null, bool dOffice = false)
     {
         var destinataire = OvhSmsService.Normaliser(numero ?? user.PhoneNumber);
         if (destinataire == null)
@@ -67,7 +81,7 @@ public class DeuxFacteursSms
             return new Resultat(false, "L'envoi de SMS n'est pas configuré sur ce serveur.");
 
         // ── Délai entre deux envois ──
-        if (user.LastSmsSentAt is { } dernier)
+        if (!dOffice && user.LastSmsSentAt is { } dernier)
         {
             var ecoule = DateTime.UtcNow - dernier;
             if (ecoule < Delai)
