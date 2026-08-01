@@ -1095,6 +1095,61 @@ public class AdminController : ControllerBase
             .Take(50)
             .ToListAsync();
 
+        // Le dossier ne connaissait qu'un metier : celui de candidat. Un
+        // recruteur ouvrait donc une fiche de zeros — aucune candidature,
+        // aucune alerte, aucun CV, aucune note — alors qu'il publie des
+        // offres, recoit des candidatures et mene des entretiens. La base
+        // le sait par CreatedByUserId ; la fiche ne le lui demandait pas.
+        var offresPubliees = await _context.JobOffers
+            .Where(o => o.CreatedByUserId == id)
+            .OrderByDescending(o => o.CreatedAt)
+            .Select(o => new
+            {
+                o.Id, o.Title, o.Company, o.Location, o.ContractType, o.Category,
+                o.CreatedAt, o.ExpiresAt, o.IsActive, o.IsDraft, o.ModerationStatus,
+                o.ViewCount, o.ExternalSource, o.Openings,
+                applications = o.Applications.Count,
+                pending = o.Applications.Count(a => a.Status == "Pending"),
+                hired = o.Applications.Count(a => a.Status == "Accepted"),
+            })
+            .ToListAsync();
+
+        // Les candidatures recues sont bornees : une fiche n'est pas le
+        // tableau des candidatures, elle en donne la mesure et y renvoie.
+        var candidaturesRecues = await _context.Applications
+            .Where(a => a.JobOffer.CreatedByUserId == id)
+            .OrderByDescending(a => a.AppliedAt)
+            .Take(60)
+            .Select(a => new
+            {
+                a.Id, a.JobOfferId, a.Status, a.AppliedAt, a.ReviewedAt, a.IsArchived,
+                a.FullName, a.City, a.QualificationScore, a.UserId,
+                jobTitle = a.JobOffer.Title, company = a.JobOffer.Company,
+            })
+            .ToListAsync();
+
+        var entretiensMenes = await _context.Interviews
+            .Where(i => i.Application.JobOffer.CreatedByUserId == id)
+            .OrderByDescending(i => i.ProposedAt)
+            .Select(i => new
+            {
+                i.Id, i.ApplicationId, i.ProposedAt, i.Status, i.Type, i.Duration,
+                i.Location, i.InterviewerName,
+                candidat = i.Application.FullName,
+                jobTitle = i.Application.JobOffer.Title,
+            })
+            .ToListAsync();
+
+        // Le delai de reponse d'un recruteur se mesure sur les seules
+        // candidatures qu'il a effectivement lues : compter les autres
+        // comme instantanees le flatterait, les compter comme infinies le
+        // condamnerait.
+        var lues = await _context.Applications
+            .Where(a => a.JobOffer.CreatedByUserId == id && a.ReviewedAt != null)
+            .Select(a => EF.Functions.DateDiffHour(a.AppliedAt, a.ReviewedAt!.Value))
+            .ToListAsync();
+        double? delaiReponseJours = lues.Count > 0 ? Math.Round(lues.Average() / 24.0, 1) : null;
+
         // « Ce compte sert-il encore ? » est la premiere question que pose
         // une fiche, et rien n'y repondait : AppUser ne porte pas de date
         // de derniere connexion. Le journal la porte deja — la deduire
@@ -1123,6 +1178,10 @@ public class AdminController : ControllerBase
             cvSections,
             notes,
             activity,
+            offresPubliees,
+            candidaturesRecues,
+            entretiensMenes,
+            delaiReponseJours,
         };
     }
 
