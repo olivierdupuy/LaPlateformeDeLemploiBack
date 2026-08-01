@@ -12,6 +12,7 @@ using lpdeBack.Data;
 using lpdeBack.Models;
 using lpdeBack.Hubs;
 using lpdeBack.Services;
+using lpdeBack.Validation;
 
 namespace lpdeBack.Controllers;
 
@@ -1480,7 +1481,11 @@ public class AdminController : ControllerBase
 }
 
 // ── DTOs ──
-public class ModerationNoteDto { public string? Note { get; set; } }
+public class ModerationNoteDto
+{
+    [Longueur(Limites.Paragraphe)]
+    public string? Note { get; set; }
+}
 
 /// <summary>
 /// Edition d'un compte par l'administration. Tout est optionnel : null
@@ -1488,20 +1493,21 @@ public class ModerationNoteDto { public string? Note { get; set; } }
 /// </summary>
 public class AdminUserUpdateDto
 {
-    [MaxLength(100)] public string? FirstName { get; set; }
-    [MaxLength(100)] public string? LastName { get; set; }
-    [EmailAddress, MaxLength(256)] public string? Email { get; set; }
-    [MaxLength(30)] public string? PhoneNumber { get; set; }
-    [MaxLength(150)] public string? Title { get; set; }
-    [MaxLength(500)] public string? Bio { get; set; }
-    [MaxLength(500)] public string? Skills { get; set; }
-    [MaxLength(200)] public string? Education { get; set; }
-    [MaxLength(100)] public string? City { get; set; }
-    [MaxLength(200)] public string? Company { get; set; }
-    [MaxLength(300)] public string? LinkedInUrl { get; set; }
-    [MaxLength(300)] public string? PortfolioUrl { get; set; }
-    [MaxLength(500)] public string? AvatarUrl { get; set; }
-    [MaxLength(500)] public string? ResumeUrl { get; set; }
+    [Longueur(100)] public string? FirstName { get; set; }
+    [Longueur(100)] public string? LastName { get; set; }
+    [AdresseCourriel] public string? Email { get; set; }
+    [TelephoneFr] public string? PhoneNumber { get; set; }
+    [Longueur(150)] public string? Title { get; set; }
+    [Longueur(500)] public string? Bio { get; set; }
+    [Longueur(500)] public string? Skills { get; set; }
+    [Longueur(200)] public string? Education { get; set; }
+    [Longueur(100)] public string? City { get; set; }
+    [Longueur(200)] public string? Company { get; set; }
+    [AdresseWeb] public string? LinkedInUrl { get; set; }
+    [AdresseWeb] public string? PortfolioUrl { get; set; }
+    [AdresseWeb] public string? AvatarUrl { get; set; }
+    [AdresseWeb] public string? ResumeUrl { get; set; }
+    [Range(0, 70, ErrorMessage = "Le nombre d'années d'expérience doit être compris entre 0 et 70.")]
     public int? ExperienceYears { get; set; }
     public bool? IsSearchable { get; set; }
     public bool? IsActive { get; set; }
@@ -1509,7 +1515,11 @@ public class AdminUserUpdateDto
 
 public class AdminPasswordDto
 {
-    [Required, MinLength(6)]
+    // Huit et non six : la meme exigence que partout ailleurs. Un mot de
+    // passe pose par l'administration n'a pas de raison d'etre plus faible
+    // que celui que l'interesse choisirait lui-meme.
+    [Required(ErrorMessage = "Choisissez un mot de passe.")]
+    [StringLength(128, MinimumLength = 8, ErrorMessage = "Le mot de passe fait entre 8 et 128 caractères.")]
     public string NewPassword { get; set; } = string.Empty;
 }
 
@@ -1519,20 +1529,20 @@ public class AdminPasswordDto
 /// </summary>
 public class PieceDossierDto
 {
-    [MaxLength(30)] public string? Statut { get; set; }
+    [Longueur(30)] public string? Statut { get; set; }
     public bool? Archivee { get; set; }
     public bool? AlerteActive { get; set; }
-    [MaxLength(200)] public string? Libelle { get; set; }
-    [MaxLength(2000)] public string? Notes { get; set; }
+    [Longueur(200)] public string? Libelle { get; set; }
+    [Longueur(2000)] public string? Notes { get; set; }
 }
 
 public class SectionCvDto
 {
-    [MaxLength(200)] public string? Titre { get; set; }
-    [MaxLength(200)] public string? Organisation { get; set; }
-    [MaxLength(200)] public string? Lieu { get; set; }
-    [MaxLength(2000)] public string? Description { get; set; }
-    [MaxLength(100)] public string? Niveau { get; set; }
+    [Longueur(200)] public string? Titre { get; set; }
+    [Longueur(200)] public string? Organisation { get; set; }
+    [Longueur(200)] public string? Lieu { get; set; }
+    [Longueur(2000)] public string? Description { get; set; }
+    [Longueur(100)] public string? Niveau { get; set; }
 }
 
 // Les facettes alimentent les compteurs de l'en-tete des explorateurs.
@@ -1601,10 +1611,21 @@ public class UserFacetsDto
 
 public class AnnouncementCreateDto
 {
+    [Required(ErrorMessage = "Donnez un titre à l'annonce.")]
+    [StringLength(Limites.Ligne, MinimumLength = 2)]
+    [SansBalisage]
     public string Title { get; set; } = string.Empty;
+
+    [Required(ErrorMessage = "Écrivez le message de l'annonce.")]
+    [StringLength(Limites.Paragraphe, MinimumLength = 2)]
     public string Message { get; set; } = string.Empty;
+
+    [Longueur(Limites.Nom), SansBalisage]
     public string? Type { get; set; }
+
+    [Parmi("Candidate", "Recruiter", "Admin", "All")]
     public string? TargetRole { get; set; }
+
     public bool IsBanner { get; set; }
     public DateTime? StartsAt { get; set; }
     public DateTime? EndsAt { get; set; }
@@ -1612,14 +1633,22 @@ public class AnnouncementCreateDto
 
 public class SettingUpdateDto
 {
+    [Required, Longueur(Limites.Nom), SansBalisage]
     public string Key { get; set; } = string.Empty;
+
+    [Longueur(Limites.Paragraphe)]
     public string Value { get; set; } = string.Empty;
+
+    [Longueur(Limites.Nom), SansBalisage]
     public string? Type { get; set; }
+
+    [Longueur(Limites.Ligne)]
     public string? Description { get; set; }
 }
 
 public class EssaiCourrielDto
 {
     /// <summary>Vide, le message part a l'adresse de l'administrateur connecte.</summary>
+    [AdresseCourriel]
     public string? Email { get; set; }
 }

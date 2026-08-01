@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Identity;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
@@ -28,6 +29,35 @@ builder.Services.AddControllers()
     {
         options.JsonSerializerOptions.ReferenceHandler = System.Text.Json.Serialization.ReferenceHandler.IgnoreCycles;
     });
+
+// ── Ce qu'on repond a une saisie refusee ──
+//
+// « [ApiController] » rend d'office un ValidationProblemDetails : un
+// objet « errors » indexe par nom de propriete, avec des phrases en
+// anglais — « The Email field is not a valid e-mail address. » Le client
+// lit « message » et ne trouvait rien : toute saisie fautive produisait
+// le meme message generique, qui n'indiquait ni le champ ni la raison.
+//
+// On rend donc la premiere phrase sous « message », pour que l'existant
+// l'affiche sans rien changer, et la liste complete sous « erreurs »,
+// indexee par champ en minuscule initiale — la casse que le client
+// emploie — pour souligner les champs un par un.
+builder.Services.Configure<ApiBehaviorOptions>(options =>
+{
+    options.InvalidModelStateResponseFactory = context =>
+    {
+        var erreurs = context.ModelState
+            .Where(e => e.Value?.Errors.Count > 0)
+            .ToDictionary(
+                e => string.IsNullOrEmpty(e.Key) ? "_" : char.ToLowerInvariant(e.Key[0]) + e.Key[1..],
+                e => e.Value!.Errors.Select(x => x.ErrorMessage).ToArray());
+
+        var premiere = erreurs.Values.SelectMany(v => v).FirstOrDefault()
+                       ?? "Certaines informations sont incomplètes ou mal formées.";
+
+        return new BadRequestObjectResult(new { message = premiere, erreurs });
+    };
+});
 
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();

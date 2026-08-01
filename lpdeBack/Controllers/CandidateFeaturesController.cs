@@ -4,6 +4,8 @@ using Microsoft.EntityFrameworkCore;
 using System.Security.Claims;
 using lpdeBack.Data;
 using lpdeBack.Models;
+using System.ComponentModel.DataAnnotations;
+using lpdeBack.Validation;
 
 namespace lpdeBack.Controllers;
 
@@ -316,9 +318,19 @@ public class CandidateFeaturesController : ControllerBase
 }
 
 // DTOs
-public class NoteDto { public string? Content { get; set; } }
+public class NoteDto
+{
+    [StringLength(Limites.Texte, ErrorMessage = "Cette note ne peut pas dépasser 20 000 caractères.")]
+    public string? Content { get; set; }
+}
+
 public class ProposeSlotsDto
 {
+    // Une liste bornee : proposer dix mille creneaux n'a aucun sens pour
+    // un entretien, et chacun d'eux devient une ligne en base.
+    [MaxLength(20, ErrorMessage = "Vous ne pouvez pas proposer plus de 20 créneaux.")]
     public List<string> Slots { get; set; } = new(); // ISO date strings
+
+    [Longueur(Limites.Paragraphe)]
     public string? Message { get; set; }
 }

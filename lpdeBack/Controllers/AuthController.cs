@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using System.IdentityModel.Tokens.Jwt;
+using System.ComponentModel.DataAnnotations;
 using System.Security.Claims;
 using System.Text;
 using lpdeBack.Models;
@@ -11,6 +12,7 @@ using lpdeBack.DTOs;
 using lpdeBack.Data;
 using lpdeBack.Hubs;
 using lpdeBack.Services;
+using lpdeBack.Validation;
 
 namespace lpdeBack.Controllers;
 
@@ -731,5 +733,7 @@ public class AuthController : ControllerBase
 // Small DTO for role change
 public class ChangeRoleDto
 {
+    [Required(ErrorMessage = "Indiquez le rôle.")]
+    [Parmi("Candidate", "Recruiter", "Admin")]
     public string Role { get; set; } = string.Empty;
 }

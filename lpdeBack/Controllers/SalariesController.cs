@@ -4,6 +4,8 @@ using Microsoft.EntityFrameworkCore;
 using System.Security.Claims;
 using lpdeBack.Data;
 using lpdeBack.Models;
+using System.ComponentModel.DataAnnotations;
+using lpdeBack.Validation;
 
 namespace lpdeBack.Controllers;
 
@@ -151,10 +153,26 @@ public class SalariesController : ControllerBase
 
 public class SalaryContributionDto
 {
+    [Required(ErrorMessage = "Indiquez l'intitulé du poste.")]
+    [StringLength(Limites.Ligne, MinimumLength = 2, ErrorMessage = "L'intitulé fait entre 2 et 200 caractères.")]
+    [SansBalisage]
     public string JobTitle { get; set; } = string.Empty;
+
+    [Longueur(Limites.Ligne), SansBalisage]
     public string? Company { get; set; }
+
+    [Longueur(Limites.Nom), SansBalisage]
     public string? Location { get; set; }
+
+    // Ces montants nourrissent les estimations affichees publiquement.
+    // Une contribution a un milliard, ou negative, deplacerait la moyenne
+    // d'un metier entier — et c'est la page « Salaires » qui mentirait.
+    [Range(1_000, 1_000_000, ErrorMessage = "Le salaire annuel doit être compris entre 1 000 € et 1 000 000 €.")]
     public int AmountAnnual { get; set; }
+
+    [Longueur(Limites.Nom), SansBalisage]
     public string? ContractType { get; set; }
+
+    [Longueur(Limites.Nom), SansBalisage]
     public string? ExperienceLevel { get; set; }
 }

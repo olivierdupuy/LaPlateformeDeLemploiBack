@@ -4,6 +4,8 @@ using Microsoft.EntityFrameworkCore;
 using System.Security.Claims;
 using lpdeBack.Data;
 using lpdeBack.Models;
+using System.ComponentModel.DataAnnotations;
+using lpdeBack.Validation;
 
 namespace lpdeBack.Controllers;
 
@@ -266,13 +268,29 @@ public class RecruiterFeaturesController : ControllerBase
 // DTOs
 public class TemplateDto
 {
+    [Required(ErrorMessage = "Donnez un nom à ce modèle.")]
+    [StringLength(Limites.Ligne, MinimumLength = 2)]
+    [SansBalisage]
     public string Name { get; set; } = string.Empty;
+
+    [Required(ErrorMessage = "Écrivez le contenu du modèle.")]
+    [StringLength(Limites.Texte, MinimumLength = 1)]
     public string Content { get; set; } = string.Empty;
+
+    [Longueur(Limites.Nom), SansBalisage]
     public string? Category { get; set; }
 }
 
 public class BulkStatusDto
 {
+    // Le lot est borne : chaque element declenche un courriel au candidat.
+    // Sans borne, un seul appel peut en expedier des milliers, et rien ne
+    // les rattrape une fois partis.
+    [MinLength(1, ErrorMessage = "Sélectionnez au moins une candidature.")]
+    [MaxLength(500, ErrorMessage = "Traitez au maximum 500 candidatures à la fois.")]
     public List<int> Ids { get; set; } = new();
+
+    [Required(ErrorMessage = "Indiquez le statut.")]
+    [Parmi("Pending", "Reviewed", "Accepted", "Rejected")]
     public string Status { get; set; } = string.Empty;
 }

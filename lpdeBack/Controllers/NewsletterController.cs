@@ -1,9 +1,11 @@
+using System.ComponentModel.DataAnnotations;
 using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using lpdeBack.Data;
 using lpdeBack.Services;
+using lpdeBack.Validation;
 
 namespace lpdeBack.Controllers;
 
@@ -125,14 +127,45 @@ public class NewsletterController : ControllerBase
 
 public class AbonnementDto
 {
+    [Required(ErrorMessage = "Indiquez votre adresse e-mail.")]
+    [AdresseCourriel]
     public string? Email { get; set; }
+
+    [Longueur(Limites.Nom), SansBalisage]
     public string? Prenom { get; set; }
+
+    [Longueur(Limites.Nom), SansBalisage]
     public string? Nom { get; set; }
+
+    [Longueur(Limites.Ligne), SansBalisage]
     public string? Ville { get; set; }
+
+    [Longueur(Limites.Url), SansBalisage]
     public string? Categories { get; set; }
-    /// <summary>D'ou vient l'abonnement : Footer, Page, Inscription.</summary>
+
+    /// <summary>
+    /// D'ou vient l'abonnement : Footer, Page, Inscription.
+    ///
+    /// Enumere plutot que libre : cette valeur sert de preuve de
+    /// consentement au sens du RGPD — elle dit ou la personne a coche.
+    /// Une valeur inventee la rendrait inexploitable le jour ou il faut
+    /// justifier l'envoi.
+    /// </summary>
+    [Parmi("Footer", "Page", "Inscription", "Import", "Admin")]
     public string? Source { get; set; }
 }
 
-public class JetonDto { public string? Jeton { get; set; } }
-public class DesinscriptionDto { public string? Jeton { get; set; } public string? Motif { get; set; } }
+public class JetonDto
+{
+    [Required, Longueur(200)]
+    public string? Jeton { get; set; }
+}
+
+public class DesinscriptionDto
+{
+    [Required, Longueur(200)]
+    public string? Jeton { get; set; }
+
+    [Longueur(Limites.Paragraphe)]
+    public string? Motif { get; set; }
+}

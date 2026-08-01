@@ -4,6 +4,8 @@ using Microsoft.EntityFrameworkCore;
 using System.Security.Claims;
 using lpdeBack.Data;
 using lpdeBack.Models;
+using System.ComponentModel.DataAnnotations;
+using lpdeBack.Validation;
 
 namespace lpdeBack.Controllers;
 
@@ -70,13 +72,29 @@ public class EventsController : ControllerBase
 
 public class JobEventDto
 {
+    [Required(ErrorMessage = "Donnez un titre à l'événement.")]
+    [StringLength(Limites.Ligne, MinimumLength = 2)]
+    [SansBalisage]
     public string Title { get; set; } = string.Empty;
+
+    [Longueur(Limites.Texte)]
     public string? Description { get; set; }
+
+    [Longueur(Limites.Nom), SansBalisage]
     public string? Type { get; set; }
+
+    [Required(ErrorMessage = "Indiquez la date de début.")]
     public DateTime StartsAt { get; set; }
+
     public DateTime? EndsAt { get; set; }
     public bool IsOnline { get; set; }
+
+    [Longueur(Limites.Ligne), SansBalisage]
     public string? Location { get; set; }
+
+    [AdresseWeb]
     public string? Url { get; set; }
+
+    [Longueur(Limites.Ligne), SansBalisage]
     public string? Organizer { get; set; }
 }

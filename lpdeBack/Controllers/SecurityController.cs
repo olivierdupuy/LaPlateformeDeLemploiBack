@@ -8,6 +8,8 @@ using System.IdentityModel.Tokens.Jwt;
 using lpdeBack.Data;
 using lpdeBack.Models;
 using lpdeBack.Services;
+using System.ComponentModel.DataAnnotations;
+using lpdeBack.Validation;
 
 namespace lpdeBack.Controllers;
 
@@ -454,9 +456,61 @@ public class SecurityController : ControllerBase
 
 // ── DTO ──
 
-public class CodeDto { public string? Code { get; set; } }
-public class MotDePasseDto { public string? MotDePasse { get; set; } }
-public class MotDePasseEtCodeDto { public string? MotDePasse { get; set; } public string? Code { get; set; } }
-public class ChangementMotDePasseDto { public string? Actuel { get; set; } public string? Nouveau { get; set; } }
-public class TelephoneDto { public string? Telephone { get; set; } }
-public class TelephoneEtCodeDto { public string? Telephone { get; set; } public string? Code { get; set; } }
+// Les bornes de ces champs ne sont pas cosmetiques : chacun est
+// confronte a un secret, et laisser passer un mega-octet ferait travailler
+// le hachage ou la verification de code pour rien — a repetition, c'est
+// une facon d'occuper le serveur sans rien exploiter.
+
+public class CodeDto
+{
+    [Required(ErrorMessage = "Saisissez le code.")]
+    [StringLength(20, MinimumLength = 6, ErrorMessage = "Un code compte six chiffres, ou onze signes pour un code de secours.")]
+    public string? Code { get; set; }
+}
+
+public class MotDePasseDto
+{
+    [Required(ErrorMessage = "Saisissez votre mot de passe.")]
+    [Longueur(128)]
+    public string? MotDePasse { get; set; }
+}
+
+public class MotDePasseEtCodeDto
+{
+    [Required(ErrorMessage = "Saisissez votre mot de passe.")]
+    [Longueur(128)]
+    public string? MotDePasse { get; set; }
+
+    [Required(ErrorMessage = "Saisissez le code.")]
+    [StringLength(20, MinimumLength = 6)]
+    public string? Code { get; set; }
+}
+
+public class ChangementMotDePasseDto
+{
+    [Required(ErrorMessage = "Saisissez votre mot de passe actuel.")]
+    [Longueur(128)]
+    public string? Actuel { get; set; }
+
+    [Required(ErrorMessage = "Choisissez un nouveau mot de passe.")]
+    [StringLength(128, MinimumLength = 8, ErrorMessage = "Le mot de passe fait entre 8 et 128 caractères.")]
+    public string? Nouveau { get; set; }
+}
+
+public class TelephoneDto
+{
+    [Required(ErrorMessage = "Indiquez votre numéro de mobile.")]
+    [TelephoneFr]
+    public string? Telephone { get; set; }
+}
+
+public class TelephoneEtCodeDto
+{
+    [Required(ErrorMessage = "Indiquez votre numéro de mobile.")]
+    [TelephoneFr]
+    public string? Telephone { get; set; }
+
+    [Required(ErrorMessage = "Saisissez le code reçu par SMS.")]
+    [StringLength(20, MinimumLength = 6, ErrorMessage = "Le code compte six chiffres.")]
+    public string? Code { get; set; }
+}

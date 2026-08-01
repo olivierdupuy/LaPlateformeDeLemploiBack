@@ -6,6 +6,8 @@ using Microsoft.EntityFrameworkCore;
 using lpdeBack.Data;
 using lpdeBack.Models;
 using lpdeBack.Services;
+using System.ComponentModel.DataAnnotations;
+using lpdeBack.Validation;
 
 namespace lpdeBack.Controllers;
 
@@ -520,14 +522,36 @@ public class AdminNewsletterController : ControllerBase
 
 public class CampagneDto
 {
+    // Pas « obligatoire » ici, et ce n'est pas un oubli : ce meme objet
+    // sert a compter les destinataires d'un ciblage et a en calculer
+    // l'apercu, ou aucun objet n'est encore saisi — et un brouillon
+    // s'enregistre justement avant d'etre redige. L'exigence porte la ou
+    // elle a un sens : au moment d'expedier, ou l'envoi est refuse sans
+    // objet ni corps.
+    [Longueur(Limites.Ligne), SansBalisage]
     public string? Subject { get; set; }
+
+    [Longueur(Limites.Ligne)]
     public string? PreviewText { get; set; }
+
+    // Le corps est du HTML redige dans la console : c'est le seul champ
+    // ou le balisage est l'objet meme du champ. Il reste borne — un
+    // courriel de deux megaoctets serait refuse par les messageries
+    // avant meme d'atteindre une boite.
+    [StringLength(200_000, ErrorMessage = "Le message est trop volumineux : les messageries le rejetteraient.")]
     public string? BodyHtml { get; set; }
+
     public List<string>? Roles { get; set; }
     public List<string>? Categories { get; set; }
     public List<string>? Cities { get; set; }
     public List<string>? Departments { get; set; }
+
+    [Longueur(Limites.Nom), SansBalisage]
     public string? Activity { get; set; }
 }
 
-public class EssaiCampagneDto { public string? Email { get; set; } }
+public class EssaiCampagneDto
+{
+    [AdresseCourriel]
+    public string? Email { get; set; }
+}

@@ -5,6 +5,8 @@ using Microsoft.EntityFrameworkCore;
 using System.Security.Claims;
 using lpdeBack.Data;
 using lpdeBack.Models;
+using System.ComponentModel.DataAnnotations;
+using lpdeBack.Validation;
 
 namespace lpdeBack.Controllers;
 
@@ -338,29 +340,68 @@ public class CompanyReviewsController : ControllerBase
 
 public class CompanyTextDto
 {
+    [Required(ErrorMessage = "Écrivez votre message.")]
+    [StringLength(Limites.Texte, MinimumLength = 2, ErrorMessage = "Le texte fait entre 2 et 20 000 caractères.")]
     public string Body { get; set; } = string.Empty;
 }
 
 public class CompanyProfileDto
 {
+    // Aucune entreprise n'a ete fondee en l'an 300, ni en 2400. La borne
+    // haute est calculee : une annee future n'est pas une fondation.
+    [Range(1800, 2100, ErrorMessage = "L'année de création doit être comprise entre 1800 et 2100.")]
     public int? FoundedYear { get; set; }
+
+    [Longueur(Limites.Nom), SansBalisage]
     public string? Size { get; set; }
+
+    [Longueur(Limites.Ligne), SansBalisage]
     public string? Industry { get; set; }
+
+    [Longueur(Limites.Ligne), SansBalisage]
     public string? Headquarters { get; set; }
+
+    [AdresseWeb]
     public string? Website { get; set; }
+
+    [StringLength(Limites.Texte, ErrorMessage = "La présentation ne peut pas dépasser 20 000 caractères.")]
     public string? About { get; set; }
 }
 
 public class CompanyReviewCreateDto
 {
+    // Les six notes sont sur cinq. Sans borne, une note de 10 000 sur une
+    // seule ligne ecrase la moyenne de l'entreprise entiere — et la fiche
+    // publique affiche alors un chiffre que personne ne peut expliquer.
+    [Range(1, 5, ErrorMessage = "La note globale va de 1 à 5.")]
     public int OverallRating { get; set; }
+
+    [Range(1, 5, ErrorMessage = "La note « équilibre » va de 1 à 5.")]
     public int WorkLifeBalance { get; set; }
+
+    [Range(1, 5, ErrorMessage = "La note « rémunération » va de 1 à 5.")]
     public int PayBenefits { get; set; }
+
+    [Range(1, 5, ErrorMessage = "La note « sécurité de l'emploi » va de 1 à 5.")]
     public int JobSecurity { get; set; }
+
+    [Range(1, 5, ErrorMessage = "La note « management » va de 1 à 5.")]
     public int Management { get; set; }
+
+    [Range(1, 5, ErrorMessage = "La note « culture » va de 1 à 5.")]
     public int Culture { get; set; }
+
+    [Required(ErrorMessage = "Donnez un titre à votre avis.")]
+    [StringLength(Limites.Ligne, MinimumLength = 3, ErrorMessage = "Le titre fait entre 3 et 200 caractères.")]
+    [SansBalisage]
     public string Title { get; set; } = string.Empty;
+
+    [StringLength(Limites.Texte, ErrorMessage = "L'avis ne peut pas dépasser 20 000 caractères.")]
     public string? Body { get; set; }
+
+    [Longueur(Limites.Ligne), SansBalisage]
     public string? JobTitle { get; set; }
+
+    [Longueur(Limites.Nom), SansBalisage]
     public string? Location { get; set; }
 }

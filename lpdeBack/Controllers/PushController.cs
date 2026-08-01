@@ -4,6 +4,8 @@ using Microsoft.EntityFrameworkCore;
 using System.Security.Claims;
 using lpdeBack.Data;
 using lpdeBack.Models;
+using System.ComponentModel.DataAnnotations;
+using lpdeBack.Validation;
 
 namespace lpdeBack.Controllers;
 
@@ -45,5 +47,8 @@ public class PushController : ControllerBase
 
 public class PushTokenDto
 {
+    // Un jeton Firebase depasse rarement 200 signes ; la borne large
+    // laisse de la marge sans accepter n'importe quoi.
+    [Required, Longueur(1_000)]
     public string Token { get; set; } = string.Empty;
 }

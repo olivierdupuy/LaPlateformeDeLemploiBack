@@ -1,72 +1,87 @@
 using System.ComponentModel.DataAnnotations;
+using lpdeBack.Validation;
 
 namespace lpdeBack.DTOs;
 
 public class RegisterDto
 {
-    [Required, MaxLength(100)]
+    [Required(ErrorMessage = "Indiquez votre prénom.")]
+    [StringLength(Limites.Nom, MinimumLength = 2, ErrorMessage = "Le prénom fait entre 2 et 100 caractères.")]
+    [SansBalisage]
     public string FirstName { get; set; } = string.Empty;
 
-    [Required, MaxLength(100)]
+    [Required(ErrorMessage = "Indiquez votre nom.")]
+    [StringLength(Limites.Nom, MinimumLength = 2, ErrorMessage = "Le nom fait entre 2 et 100 caractères.")]
+    [SansBalisage]
     public string LastName { get; set; } = string.Empty;
 
-    [Required, EmailAddress]
+    [Required(ErrorMessage = "Indiquez votre adresse e-mail.")]
+    [AdresseCourriel]
     public string Email { get; set; } = string.Empty;
 
-    [Required, MinLength(8)]
+    // La borne haute n'est pas décorative : le mot de passe est haché, et
+    // hacher un mégaoctet occupe le serveur le temps qu'il faut. Répété,
+    // c'est une façon de le mettre à genoux sans rien exploiter.
+    [Required(ErrorMessage = "Choisissez un mot de passe.")]
+    [StringLength(128, MinimumLength = 8, ErrorMessage = "Le mot de passe fait entre 8 et 128 caractères.")]
     public string Password { get; set; } = string.Empty;
 
-    [MaxLength(50)]
+    [Parmi("Candidate", "Recruiter")]
     public string Role { get; set; } = "Candidate";
 
-    [MaxLength(200)]
+    [Longueur(Limites.Ligne), SansBalisage]
     public string? Company { get; set; }
 }
 
 public class LoginDto
 {
-    [Required, EmailAddress]
+    [Required(ErrorMessage = "Indiquez votre adresse e-mail.")]
+    [AdresseCourriel]
     public string Email { get; set; } = string.Empty;
 
-    [Required]
+    [Required(ErrorMessage = "Indiquez votre mot de passe.")]
+    [StringLength(128, ErrorMessage = "Mot de passe trop long.")]
     public string Password { get; set; } = string.Empty;
 }
 
 public class UpdateProfileDto
 {
-    [MaxLength(100)]
+    [Longueur(Limites.Nom), SansBalisage]
     public string? FirstName { get; set; }
 
-    [MaxLength(100)]
+    [Longueur(Limites.Nom), SansBalisage]
     public string? LastName { get; set; }
 
-    [MaxLength(500)]
+    [AdresseWeb]
     public string? AvatarUrl { get; set; }
 
-    [MaxLength(200)]
+    [Longueur(Limites.Ligne), SansBalisage]
     public string? Company { get; set; }
 
-    [MaxLength(500)]
+    [StringLength(Limites.Paragraphe, ErrorMessage = "La présentation ne peut pas dépasser 2 000 caractères.")]
     public string? Bio { get; set; }
 
-    [MaxLength(150)]
+    [Longueur(150), SansBalisage]
     public string? Title { get; set; }
 
-    [MaxLength(500)]
+    [Longueur(Limites.Url), SansBalisage]
     public string? Skills { get; set; }
 
+    // Une carrière ne dure pas soixante-dix ans, et un nombre négatif
+    // fausserait tous les filtres qui trient dessus.
+    [Range(0, 70, ErrorMessage = "Le nombre d'années d'expérience doit être compris entre 0 et 70.")]
     public int? ExperienceYears { get; set; }
 
-    [MaxLength(200)]
+    [Longueur(Limites.Ligne), SansBalisage]
     public string? Education { get; set; }
 
-    [MaxLength(100)]
+    [Longueur(Limites.Nom), SansBalisage]
     public string? City { get; set; }
 
-    [MaxLength(300)]
+    [AdresseWeb]
     public string? LinkedInUrl { get; set; }
 
-    [MaxLength(300)]
+    [AdresseWeb]
     public string? PortfolioUrl { get; set; }
 
     public bool? IsSearchable { get; set; }
@@ -74,15 +89,20 @@ public class UpdateProfileDto
 
 public class GoogleSignInDto
 {
+    // Un jeton Google dépasse rarement 2 000 caractères ; au-delà, ce
+    // n'en est pas un, et il est inutile d'aller le soumettre à Google.
+    [Required, Longueur(4_000)]
     public string Credential { get; set; } = string.Empty;
 }
 
 public class ChangePasswordDto
 {
-    [Required]
+    [Required(ErrorMessage = "Indiquez votre mot de passe actuel.")]
+    [Longueur(128)]
     public string CurrentPassword { get; set; } = string.Empty;
 
-    [Required, MinLength(8)]
+    [Required(ErrorMessage = "Choisissez un nouveau mot de passe.")]
+    [StringLength(128, MinimumLength = 8, ErrorMessage = "Le mot de passe fait entre 8 et 128 caractères.")]
     public string NewPassword { get; set; } = string.Empty;
 }
 
@@ -148,41 +168,63 @@ public class UserDto
 
 public class MotDePasseOublieDto
 {
+    [Required(ErrorMessage = "Indiquez votre adresse e-mail.")]
+    [AdresseCourriel]
     public string Email { get; set; } = string.Empty;
 }
 
 public class ReinitialisationDto
 {
+    [Required, Longueur(450)]
     public string UserId { get; set; } = string.Empty;
+
+    [Required, Longueur(2_000)]
     public string Jeton { get; set; } = string.Empty;
+
+    [Required(ErrorMessage = "Choisissez un nouveau mot de passe.")]
+    [StringLength(128, MinimumLength = 8, ErrorMessage = "Le mot de passe fait entre 8 et 128 caractères.")]
     public string NouveauMotDePasse { get; set; } = string.Empty;
 }
 
 public class ConfirmationEmailDto
 {
+    [Required, Longueur(450)]
     public string UserId { get; set; } = string.Empty;
+
+    [Required, Longueur(2_000)]
     public string Jeton { get; set; } = string.Empty;
 }
 
 public class DefiDeuxFacteursDto
 {
     /// <summary>Le jeton rendu par la connexion, qui ne vaut que pour cette etape.</summary>
+    [Required, Longueur(2_000)]
     public string ChallengeToken { get; set; } = string.Empty;
 
-    /// <summary>Le code de l'application, ou l'un des codes de secours.</summary>
+    /// <summary>
+    /// Le code de l'application, ou l'un des codes de secours.
+    ///
+    /// Six chiffres, ou un code de secours de onze signes avec son tiret.
+    /// La borne evite qu'on soumette un dictionnaire dans un seul champ.
+    /// </summary>
+    [Required(ErrorMessage = "Saisissez le code reçu.")]
+    [StringLength(20, MinimumLength = 6, ErrorMessage = "Un code compte six chiffres, ou onze signes pour un code de secours.")]
     public string Code { get; set; } = string.Empty;
 }
 
 public class RenvoiDto
 {
+    [Required, Longueur(2_000)]
     public string ChallengeToken { get; set; } = string.Empty;
 }
 
 public class LinkedInDto
 {
     /// <summary>Le code d'autorisation rendu par LinkedIn a la redirection.</summary>
+    [Required, Longueur(2_000)]
     public string Code { get; set; } = string.Empty;
 
     /// <summary>L'URL de redirection utilisee, que LinkedIn revalide a l'echange.</summary>
+    [Required, AdresseWeb]
     public string RedirectUri { get; set; } = string.Empty;
 }
