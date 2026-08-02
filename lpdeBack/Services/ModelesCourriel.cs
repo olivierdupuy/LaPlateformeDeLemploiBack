@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Net;
 
 namespace lpdeBack.Services;
@@ -634,6 +635,74 @@ public static class ModelesCourriel
             """;
         return new Courriel(destinataire, $"{titre} — {poste}",
                             Envelopper(titre, corps, "Voir ma candidature", lien), texte);
+    }
+
+    // ══════════════════════════════════════
+    //  Facturation
+    // ══════════════════════════════════════
+
+    /// <summary>
+    /// La relance d'une facture impayee.
+    ///
+    /// Un courriel, et rien d'autre : la console ne preleve pas. Un
+    /// prelevement declenche depuis un ecran d'administration serait un
+    /// debit qu'aucun client n'a autorise ce jour-la, et personne ne
+    /// saurait dire qui l'a lance ni pourquoi.
+    ///
+    /// Le ton reste factuel. Une relance qui accuse froisse un client qui
+    /// a peut-etre simplement change de carte, et le motif du refus est
+    /// justement ce qu'il lui faut pour agir.
+    /// </summary>
+    public static Courriel RelanceFacture(string destinataire, string? prenom, string numero,
+                                          int montantTtcCentimes, DateTime emiseLe,
+                                          string? motif, string lienFacturation)
+    {
+        var montant = (montantTtcCentimes / 100m).ToString("N2", CultureInfo.GetCultureInfo("fr-FR")) + " €";
+        var titre = $"Facture {numero} — en attente de reglement";
+        var bonjour = string.IsNullOrWhiteSpace(prenom) ? "Bonjour," : $"Bonjour {E(prenom)},";
+
+        var ligneMotif = string.IsNullOrWhiteSpace(motif) ? "" : $"""
+            <tr><td style="padding:3px 0;color:#577177">Motif du refus</td>
+                <td style="padding:3px 0">{E(motif)}</td></tr>
+            """;
+
+        var corps = $"""
+            <p style="margin:0 0 12px">{bonjour}</p>
+            <p style="margin:0 0 12px">Le reglement de la facture ci-dessous ne nous est pas parvenu.</p>
+            <table role="presentation" cellpadding="0" cellspacing="0" border="0"
+                   style="width:100%;margin:0 0 14px;font-size:14px;color:#39545a">
+              <tr><td style="padding:3px 0;color:#577177">Facture</td>
+                  <td style="padding:3px 0;font-weight:600;color:#10272b">{E(numero)}</td></tr>
+              <tr><td style="padding:3px 0;color:#577177">Montant</td>
+                  <td style="padding:3px 0;font-weight:600;color:#10272b">{montant} TTC</td></tr>
+              <tr><td style="padding:3px 0;color:#577177">Emise le</td>
+                  <td style="padding:3px 0">{emiseLe:dd/MM/yyyy}</td></tr>
+              {ligneMotif}
+            </table>
+            <p style="margin:0 0 12px">Vos offres en ligne ne sont pas suspendues : ce message
+               est une relance, pas une coupure.</p>
+            <p style="margin:0"><a href="{E(lienFacturation)}" style="color:#15616d">Regler depuis votre espace</a></p>
+            """;
+
+        var texte = $"""
+            {(string.IsNullOrWhiteSpace(prenom) ? "Bonjour," : $"Bonjour {prenom},")}
+
+            Le reglement de la facture ci-dessous ne nous est pas parvenu.
+
+            Facture : {numero}
+            Montant : {montant} TTC
+            Emise le : {emiseLe:dd/MM/yyyy}
+            {(string.IsNullOrWhiteSpace(motif) ? "" : $"Motif du refus : {motif}")}
+
+            Vos offres en ligne ne sont pas suspendues : ce message est une
+            relance, pas une coupure.
+
+            Regler : {lienFacturation}
+
+            {Marque}
+            """;
+
+        return new Courriel(destinataire, titre, Envelopper(titre, corps), texte);
     }
 
     // ══════════════════════════════════════
