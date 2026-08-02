@@ -26,12 +26,16 @@ public class AdminController : ControllerBase
     private readonly ActivityLogService _log;
     private readonly IHubContext<ChatHub> _hub;
 
-    public AdminController(AppDbContext context, UserManager<AppUser> userManager, ActivityLogService log, IHubContext<ChatHub> hub)
+    private readonly lpdeBack.Services.AssistantIa _assistant;
+
+    public AdminController(AppDbContext context, UserManager<AppUser> userManager, ActivityLogService log,
+                           IHubContext<ChatHub> hub, lpdeBack.Services.AssistantIa assistant)
     {
         _context = context;
         _userManager = userManager;
         _log = log;
         _hub = hub;
+        _assistant = assistant;
     }
 
     private string UserId() => User.FindFirstValue(ClaimTypes.NameIdentifier)!;
@@ -351,7 +355,64 @@ public class AdminController : ControllerBase
         else
             query = query.Where(j => j.ModerationStatus == "Pending");
 
-        return await query.OrderByDescending(j => j.CreatedAt).ToListAsync();
+        // L'explorateur d'offres se lit par date : c'est un inventaire.
+        if (!string.IsNullOrEmpty(status))
+            return await query.OrderByDescending(j => j.CreatedAt).ToListAsync();
+
+        // La file d'attente, non. Elle etait rendue dans l'ordre d'arrivee,
+        // ce qui revient a traiter en dernier le plus urgent des qu'elle
+        // s'allonge : une annonce qui reclame des frais de dossier
+        // attendait derriere trente offres anodines deposees apres elle.
+        // « ScoreFraude » est deja calcule a l'entree par
+        // « QualiteCatalogue » et personne ne s'en servait pour ranger.
+        return await query
+            .OrderByDescending(j => j.ScoreFraude ?? 0)
+            .ThenByDescending(j => j.CreatedAt)
+            .ToListAsync();
+    }
+
+    /// <summary>
+    /// Un second avis sur une offre douteuse.
+    ///
+    /// <see cref="lpdeBack.Services.QualiteCatalogue"/> reconnait des
+    /// motifs : demande d'argent, coordonnees bancaires, messagerie
+    /// privee. Il ne sait pas lire une annonce dont chaque phrase est
+    /// anodine et dont l'ensemble ne tient pas debout — un poste de
+    /// « chargé de transferts » a 6 000 € par mois, sans experience
+    /// requise, chez un employeur sans adresse.
+    ///
+    /// A la demande, une offre a la fois, quand le moderateur ouvre la
+    /// fiche. Pas au chargement de la file : elle peut compter cent
+    /// entrees, et cent appels par ouverture d'ecran videraient le quota
+    /// du jour avant midi.
+    ///
+    /// L'avis ne decide rien. Il n'ecrit rien en base, ne change aucun
+    /// statut, et le moderateur garde la main : « Approved » et
+    /// « Rejected » restent des gestes humains. Quand le modele n'est pas
+    /// configure ou que le quota est atteint, la reponse le dit et
+    /// l'ecran se passe de lui.
+    /// </summary>
+    [HttpGet("moderation/{id}/avis")]
+    public async Task<ActionResult<object>> AvisModeration(int id, CancellationToken ct)
+    {
+        var offre = await _context.JobOffers.AsNoTracking().FirstOrDefaultAsync(j => j.Id == id);
+        if (offre == null) return NotFound();
+
+        if (!_assistant.Disponible)
+            return Ok(new { disponible = false, avis = (string?)null, risque = (int?)null });
+
+        var avis = await _assistant.Moderer(offre, offre.ScoreFraude ?? 0, offre.MotifFraude, ct);
+
+        return Ok(new
+        {
+            disponible = avis is not null,
+            risque = avis?.Risque,
+            avis = avis?.Avis,
+            // Rappele a cote de l'avis : c'est le score des regles qui a
+            // mis l'offre ici, et c'est lui qui fait foi.
+            scoreRegles = offre.ScoreFraude ?? 0,
+            motifRegles = offre.MotifFraude,
+        });
     }
 
     [HttpPatch("moderation/{id}/approve")]

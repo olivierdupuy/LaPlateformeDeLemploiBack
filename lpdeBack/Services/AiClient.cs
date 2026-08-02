@@ -75,8 +75,29 @@ public class AiClient
         _logger = logger;
     }
 
+    /// <summary>
+    /// Y a-t-il de quoi appeler un modele, vraiment ?
+    ///
+    /// La reponse tenait a deux champs — une adresse et un nom de modele —
+    /// et ces deux-la sont remplis par defaut dans « appsettings.json ».
+    /// Sans cle d'API, le site se croyait donc equipe : il composait sa
+    /// requete, sortait vers api.anthropic.com, recevait un 401, et
+    /// affichait a l'utilisateur « le serveur du modele a refuse
+    /// l'authentification » — apres avoir consomme un appel du quota du
+    /// jour et laisse l'interface promettre une analyse qui n'arriverait
+    /// jamais.
+    ///
+    /// Un service distant veut donc une cle. Un modele du reseau local,
+    /// lui, n'en demande pas : Ollama et llama.cpp servent sans
+    /// authentification, et l'exiger reviendrait a interdire la seule
+    /// configuration qui ne coute rien.
+    /// </summary>
     public bool IsConfigured =>
-        !string.IsNullOrWhiteSpace(_options.BaseUrl) && !string.IsNullOrWhiteSpace(_options.Model);
+        !string.IsNullOrWhiteSpace(_options.BaseUrl)
+        && !string.IsNullOrWhiteSpace(_options.Model)
+        && (EstOllama
+            || !string.IsNullOrWhiteSpace(_options.ApiKey)
+            || !string.IsNullOrWhiteSpace(_options.Username));
 
     /// <summary>Le serveur parle-t-il l'API native d'Ollama plutot que celle d'OpenAI ?</summary>
     private bool EstOllama =>

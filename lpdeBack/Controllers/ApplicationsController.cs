@@ -238,6 +238,76 @@ public class ApplicationsController : ControllerBase
         return await _context.Applications.Where(a => a.JobOfferId == jobOfferId).OrderByDescending(a => a.AppliedAt).ToListAsync();
     }
 
+    /// <summary>
+    /// Ce que chaque candidature vaut face a cette offre, et pourquoi.
+    ///
+    /// Rendu a part de la liste des candidatures, qui reste un tableau
+    /// d'« Application » : l'interface fusionne les deux sur
+    /// « candidatureId ». C'est ce qui permet de deployer le serveur avant
+    /// le front sans casser la page des recruteurs.
+    ///
+    /// Trois choses que ce point d'entree ne fait pas, et ne doit pas
+    /// faire :
+    ///
+    ///   Il ne trie pas la liste. Le classement est rendu au recruteur,
+    ///   qui l'applique s'il le veut. Une liste rangee d'office par un
+    ///   score cache est une liste ou les derniers ne sont jamais lus.
+    ///
+    ///   Il n'ecarte personne. Aucun seuil, aucun filtre : un score bas
+    ///   est rendu comme les autres, avec ses reserves.
+    ///
+    ///   Il n'appelle aucun modele de langage. Le calcul est le meme que
+    ///   celui des recommandations, pris dans l'autre sens, et il repose
+    ///   sur des criteres nommes qu'un candidat pourrait contester.
+    ///   Laisser une decision d'embauche dependre d'une phrase generee
+    ///   serait indefendable, en plus d'etre invisible.
+    /// </summary>
+    [HttpGet("job/{jobOfferId}/correspondances")]
+    [Authorize(Roles = "Admin,Recruiter")]
+    public async Task<ActionResult<IEnumerable<object>>> GetCorrespondances(int jobOfferId)
+    {
+        var job = await _context.JobOffers.FindAsync(jobOfferId);
+        if (job == null) return NotFound();
+        if (!IsAdmin() && !await _perimetre.PeutGerer(GetUserId(), job.CreatedByUserId)) return Forbid();
+
+        var candidatures = await _context.Applications
+            .AsNoTracking()
+            .Include(a => a.User)
+            .Where(a => a.JobOfferId == jobOfferId)
+            .ToListAsync();
+
+        var sortie = candidatures.Select(a =>
+        {
+            // Une candidature deposee sans compte ne porte ni competences
+            // ni parcours : il n'y a rien a comparer, et inventer un score
+            // a partir du seul nom serait pire que de n'en donner aucun.
+            if (a.User is null)
+                return new
+                {
+                    candidatureId = a.Id,
+                    score = (int?)null,
+                    fiabilite = 0,
+                    estimation = true,
+                    raisons = (IReadOnlyList<string>)Array.Empty<string>(),
+                    reserves = (IReadOnlyList<string>)new[] { "profil non renseigne : rien a comparer" },
+                };
+
+            var note = Correspondance.Noter(a.User, job);
+
+            return new
+            {
+                candidatureId = a.Id,
+                score = (int?)note.Score,
+                fiabilite = note.Fiabilite,
+                estimation = note.Fiabilite < Correspondance.FiabiliteMinimale,
+                raisons = note.Raisons,
+                reserves = note.Reserves,
+            };
+        });
+
+        return Ok(sortie);
+    }
+
     [HttpPatch("{id}/status")]
     [Authorize(Roles = "Admin,Recruiter")]
     public async Task<IActionResult> UpdateStatus(int id, ApplicationUpdateStatusDto dto)

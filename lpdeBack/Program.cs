@@ -585,6 +585,12 @@ builder.Services.AddHostedService<lpdeBack.Services.JobImportBackgroundService>(
 // un Ollama, un llama.cpp ou un LM Studio installes sur le reseau local.
 builder.Services.Configure<lpdeBack.Services.AiOptions>(builder.Configuration.GetSection("Ai"));
 builder.Services.AddScoped<lpdeBack.Services.AiClient>();
+
+// La couche qui decide QUAND parler au modele, et surtout quand s'en
+// passer : cache, plafond journalier, repli silencieux sur les regles.
+// Tout ce qui la surplombe — correspondance, lecture de recherche,
+// moderation — fonctionne sans elle.
+builder.Services.AddScoped<lpdeBack.Services.AssistantIa>();
 builder.Services
     .AddHttpClient(lpdeBack.Services.AiClient.HttpClientName, (provider, client) =>
     {

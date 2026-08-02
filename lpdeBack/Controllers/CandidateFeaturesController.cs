@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using System.Security.Claims;
 using lpdeBack.Data;
 using lpdeBack.Models;
+using lpdeBack.Services;
 using System.ComponentModel.DataAnnotations;
 using lpdeBack.Validation;
 
@@ -15,7 +16,14 @@ namespace lpdeBack.Controllers;
 public class CandidateFeaturesController : ControllerBase
 {
     private readonly AppDbContext _context;
-    public CandidateFeaturesController(AppDbContext context) => _context = context;
+    private readonly AssistantIa _assistant;
+
+    public CandidateFeaturesController(AppDbContext context, AssistantIa assistant)
+    {
+        _context = context;
+        _assistant = assistant;
+    }
+
     private string UserId() => User.FindFirstValue(ClaimTypes.NameIdentifier)!;
 
     // ═══════════════════════════════════
@@ -49,8 +57,41 @@ public class CandidateFeaturesController : ControllerBase
     }
 
     // ═══════════════════════════════════
-    //  2. RECOMMANDATIONS IA (matching)
+    //  2. RECOMMANDATIONS
     // ═══════════════════════════════════
+    //
+    // La version precedente croisait les competences declarees avec les
+    // etiquettes de l'offre et divisait par le nombre de competences du
+    // candidat. Trois defauts, tous corriges par « Correspondance » :
+    //
+    //   Diviser par le nombre de competences declarees punissait le soin.
+    //   Un candidat qui en saisit vingt n'atteignait jamais le seuil ;
+    //   celui qui en saisissait deux le depassait toujours.
+    //
+    //   Un profil sans competences saisies — la majorite des inscrits —
+    //   recevait un tableau vide. Pas un mauvais score : rien du tout,
+    //   sans un mot d'explication. L'intitule du poste recherche et la
+    //   ville suffisent pourtant a dire quelque chose.
+    //
+    //   « Location.Contains(City) » ignorait Canet-en-Roussillon a onze
+    //   kilometres de Perpignan, et retenait Paris des que l'annonce
+    //   citait Perpignan dans son texte.
+    //
+    // Le score reste calcule sans modele de langage : il doit tenir quand
+    // la cle d'API manque, et il tourne sur des centaines d'offres.
+
+    /// <summary>
+    /// Combien d'offres on examine. Deux cents auparavant, c'est-a-dire
+    /// les deux cents plus recentes et rien d'autre : sur un catalogue qui
+    /// en compte des milliers, une offre parfaite publiee la semaine
+    /// derniere n'etait jamais proposee. Le calcul coute des
+    /// microsecondes par offre — c'est la lecture en base qui coute, d'ou
+    /// une borne, mais elle peut etre bien plus haute.
+    /// </summary>
+    private const int OffresExaminees = 800;
+
+    /// <summary>En deca, la proposition ferait perdre du temps.</summary>
+    private const int ScoreMinimal = 35;
 
     [HttpGet("recommendations")]
     public async Task<ActionResult<IEnumerable<object>>> GetRecommendations()
@@ -58,71 +99,128 @@ public class CandidateFeaturesController : ControllerBase
         var user = await _context.Users.FindAsync(UserId());
         if (user == null) return NotFound();
 
-        var userSkills = (user.Skills ?? "")
-            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .Select(s => s.ToLower())
-            .Where(s => s.Length > 1)
-            .ToHashSet();
+        var profil = Correspondance.Lire(user, await Souhaits());
 
-        if (userSkills.Count == 0)
+        // Rien de connu sur le candidat : ni metier, ni competences, ni
+        // ville. Il n'y a pas de recommandation honnete a faire, et en
+        // inventer une serait pire que de n'en faire aucune.
+        if (profil.Metier is null && profil.Competences.Count == 0 && profil.Position is null)
             return Ok(Array.Empty<object>());
 
-        // Get active approved offers
-        var offers = await _context.JobOffers
-            .Where(j => j.IsActive && j.ModerationStatus == "Approved")
-            .OrderByDescending(j => j.CreatedAt)
-            .Take(200)
-            .ToListAsync();
-
-        // Already applied
-        var appliedIds = (await _context.Applications
+        var dejaPostulees = await _context.Applications
             .Where(a => a.UserId == UserId())
             .Select(a => a.JobOfferId)
-            .ToListAsync()).ToHashSet();
+            .ToListAsync();
 
-        var scored = offers
-            .Where(j => !appliedIds.Contains(j.Id))
-            .Select(j =>
-            {
-                var jobSkills = ((j.Tags ?? "") + "," + (j.Category ?? ""))
-                    .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                    .Select(s => s.ToLower())
-                    .Where(s => s.Length > 1)
-                    .ToHashSet();
+        var exclues = dejaPostulees.ToHashSet();
 
-                // Also match title words
-                var titleWords = j.Title.ToLower().Split(' ', StringSplitOptions.RemoveEmptyEntries)
-                    .Where(w => w.Length > 2);
-                foreach (var w in titleWords) jobSkills.Add(w);
+        var offres = await _context.JobOffers
+            .AsNoTracking()
+            .Where(j => j.IsActive && !j.IsDraft && j.ModerationStatus == "Approved")
+            .OrderByDescending(j => j.CreatedAt)
+            .Take(OffresExaminees)
+            .ToListAsync();
 
-                // Location bonus
-                var locationMatch = !string.IsNullOrEmpty(user.City) &&
-                    j.Location.Contains(user.City, StringComparison.OrdinalIgnoreCase);
-
-                var matched = userSkills.Intersect(jobSkills).Count();
-                var total = Math.Max(userSkills.Count, 1);
-                var score = (int)Math.Round((double)matched / total * 100);
-
-                // Bonus for location match
-                if (locationMatch && score > 0) score = Math.Min(score + 15, 100);
-                // Bonus for remote if user has no city
-                if (j.IsRemote && string.IsNullOrEmpty(user.City)) score = Math.Min(score + 10, 100);
-
-                return new { job = j, score, matched };
-            })
-            .Where(x => x.score >= 20)
-            .OrderByDescending(x => x.score)
+        var retenues = offres
+            .Where(j => !exclues.Contains(j.Id))
+            .Select(j => new { Offre = j, Note = Correspondance.Noter(profil, j) })
+            .Where(x => x.Note.Score >= ScoreMinimal)
+            // A egalite de score, la plus recente : c'est celle dont le
+            // poste est le plus probablement encore a pourvoir.
+            .OrderByDescending(x => x.Note.Score)
+            .ThenByDescending(x => x.Offre.CreatedAt)
             .Take(10)
             .Select(x => new
             {
-                x.job.Id, x.job.Title, x.job.Company, x.job.Location,
-                x.job.ContractType, x.job.Category, x.job.IsRemote,
-                x.job.Salary, x.job.Tags, x.job.CreatedAt, x.job.IsUrgent,
-                x.score, x.matched,
+                x.Offre.Id, x.Offre.Title, x.Offre.Company, x.Offre.Location,
+                x.Offre.ContractType, x.Offre.Category, x.Offre.IsRemote,
+                x.Offre.Salary, x.Offre.Tags, x.Offre.CreatedAt, x.Offre.IsUrgent,
+                score = x.Note.Score,
+                // La fiabilite dit sur quelle part des criteres le score a
+                // pu etre etabli. Un pourcentage affiche sans elle est
+                // peremptoire : « 90 % » sur une annonce qui ne dit ni son
+                // salaire, ni l'experience attendue, ni le niveau de
+                // formation ne repose que sur trois criteres.
+                fiabilite = x.Note.Fiabilite,
+                estimation = x.Note.Fiabilite < Correspondance.FiabiliteMinimale,
+                raisons = x.Note.Raisons,
+                reserves = x.Note.Reserves,
             })
             .ToList();
 
-        return Ok(scored);
+        return Ok(retenues);
+    }
+
+    /// <summary>
+    /// Le rapprochement entre ce candidat et une offre precise.
+    ///
+    /// Sert la page de detail d'une offre, et elle seule. C'est le seul
+    /// endroit du site ou une synthese redigee par le modele a un sens :
+    /// une page, un appel. Sur une liste de vingt offres, la meme chose
+    /// couterait vingt appels au premier affichage — le cache
+    /// n'absorbant jamais la premiere visite.
+    ///
+    /// Le score, les raisons et les reserves, eux, sont calcules ici et
+    /// maintenant, sans reseau. La synthese arrive en plus quand elle
+    /// peut, et son absence ne se voit pas.
+    /// </summary>
+    [HttpGet("correspondance/{jobOfferId}")]
+    public async Task<ActionResult<object>> GetCorrespondance(int jobOfferId, CancellationToken ct)
+    {
+        var user = await _context.Users.FindAsync(UserId());
+        if (user == null) return NotFound();
+
+        var offre = await _context.JobOffers.AsNoTracking()
+            .FirstOrDefaultAsync(j => j.Id == jobOfferId, ct);
+        if (offre == null) return NotFound();
+
+        var note = Correspondance.Noter(user, offre, await Souhaits());
+
+        // Rien de connu sur le candidat : mieux vaut n'afficher aucune
+        // correspondance qu'un « 0 % » qui ressemble a un verdict.
+        if (note.Fiabilite == 0)
+            return Ok(new { applicable = false });
+
+        string? resume = null;
+        if (_assistant.Disponible)
+            resume = await _assistant.Resumer(note, offre.Title, ct);
+
+        return Ok(new
+        {
+            applicable = true,
+            score = note.Score,
+            fiabilite = note.Fiabilite,
+            estimation = note.Fiabilite < Correspondance.FiabiliteMinimale,
+            raisons = note.Raisons,
+            reserves = note.Reserves,
+            resume,
+            // L'interface doit pouvoir distinguer une phrase generee d'un
+            // critere calcule : les deux n'engagent pas de la meme facon.
+            assiste = resume is not null,
+        });
+    }
+
+    /// <summary>
+    /// Ce que le candidat cherche, et que sa fiche ne dit pas.
+    ///
+    /// Le type de contrat vise et l'envie de teletravail ne sont nulle
+    /// part dans « AppUser ». Ils sont en revanche dans la derniere
+    /// recherche que le candidat a pris la peine d'enregistrer, ce qui est
+    /// une declaration d'intention aussi explicite qu'un champ de profil.
+    /// </summary>
+    private async Task<Souhaits> Souhaits()
+    {
+        var derniere = await _context.SavedSearches
+            .AsNoTracking()
+            .Where(r => r.UserId == UserId())
+            .OrderByDescending(r => r.CreatedAt)
+            .FirstOrDefaultAsync();
+
+        if (derniere is null) return new Souhaits();
+
+        return new Souhaits(
+            Contrat: derniere.ContractType,
+            Distanciel: derniere.IsRemote);
     }
 
     // ═══════════════════════════════════

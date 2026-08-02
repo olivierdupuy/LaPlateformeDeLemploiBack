@@ -26,9 +26,11 @@ public class JobOffersController : ControllerBase
     private readonly IMemoryCache _cache;
     private readonly lpdeBack.Services.FacturationService _facturation;
     private readonly lpdeBack.Services.QualiteCatalogue _qualite;
+    private readonly lpdeBack.Services.AssistantIa _assistant;
 
     public JobOffersController(AppDbContext context, UserManager<AppUser> userManager, IMemoryCache cache, PerimetreRecruteur perimetre,
-                               lpdeBack.Services.FacturationService facturation, lpdeBack.Services.QualiteCatalogue qualite)
+                               lpdeBack.Services.FacturationService facturation, lpdeBack.Services.QualiteCatalogue qualite,
+                               lpdeBack.Services.AssistantIa assistant)
     {
         _perimetre = perimetre;
         _context = context;
@@ -36,6 +38,7 @@ public class JobOffersController : ControllerBase
         _cache = cache;
         _facturation = facturation;
         _qualite = qualite;
+        _assistant = assistant;
     }
 
     private string? GetUserId() => User.FindFirstValue(ClaimTypes.NameIdentifier);
@@ -72,29 +75,67 @@ public class JobOffersController : ControllerBase
 
         var query = _context.JobOffers.Where(j => j.IsActive && !j.IsDraft && j.ModerationStatus == "Approved").AsQueryable();
 
-        if (!string.IsNullOrWhiteSpace(search))
+        // ── Lecture de la recherche ──
+        //
+        // « developpeur react alternance perpignan » partait entier dans
+        // « Title.Contains(...) » et ne ramenait rien : aucun intitule
+        // d'offre au monde ne contient cette phrase. Le candidat voyait
+        // une page vide, sans un mot d'explication, et en concluait qu'il
+        // n'y avait pas de travail.
+        //
+        // On en tire donc des filtres, et on ne cherche en plein texte
+        // que ce qui reste. Les filtres explicites de l'URL l'emportent
+        // toujours : ils viennent des cases que le candidat a cochees,
+        // la lecture de sa phrase n'est qu'une deduction.
+        var requete = RequeteLibre.Analyser(search);
+
+        if (requete.MotsClefs.Count > 0)
+        {
+            // Un OU entre les mots, pas un ET : « developpeur react »
+            // doit ramener les annonces de developpeur meme quand elles
+            // ne citent pas React, quitte a les classer derriere. Le tri
+            // par pertinence, plus bas, fait le reste.
+            var mots = requete.MotsClefs.Take(6).ToList();
+            query = query.Where(j => mots.Any(m =>
+                j.Title.Contains(m) || j.Company.Contains(m)
+                || (j.Tags != null && j.Tags.Contains(m)) || j.Description.Contains(m)));
+        }
+        else if (!string.IsNullOrWhiteSpace(search) && !requete.ADesFiltres)
+        {
+            // Rien d'exploitable n'a ete tire de la phrase : on garde
+            // l'ancien comportement plutot que de tout renvoyer.
             query = query.Where(j => j.Title.Contains(search) || j.Company.Contains(search) || j.Description.Contains(search));
+        }
 
         if (!string.IsNullOrWhiteSpace(category))
             query = query.Where(j => j.Category == category);
 
-        if (!string.IsNullOrWhiteSpace(contractType))
-            query = query.Where(j => j.ContractType == contractType);
+        var contratRetenu = !string.IsNullOrWhiteSpace(contractType) ? contractType : requete.Contrat;
+        if (!string.IsNullOrWhiteSpace(contratRetenu))
+            query = query.Where(j => j.ContractType == contratRetenu);
 
-        if (isRemote.HasValue)
-            query = query.Where(j => j.IsRemote == isRemote.Value);
+        var distanciel = isRemote ?? requete.Distanciel;
+        if (distanciel.HasValue)
+            query = query.Where(j => j.IsRemote == distanciel.Value);
 
         // Recherche par rayon : si un rayon + un lieu geocodable sont fournis, on filtre par distance
         // (plus bas, apres materialisation) au lieu d'un simple Contains sur le libelle.
+        // Le lieu et le rayon peuvent aussi venir de la phrase — « autour
+        // de Perpignan » vaut « location=Perpignan&radius=25 » — mais le
+        // parametre explicite garde la main.
+        var lieuRetenu = !string.IsNullOrWhiteSpace(location) ? location : requete.Lieu;
+        var rayonRetenu = radius ?? requete.RayonKm;
+
         (double Lat, double Lng)? center = null;
-        var useRadius = radius.HasValue && radius.Value > 0 && !string.IsNullOrWhiteSpace(location);
-        if (useRadius) center = lpdeBack.Services.GeoUtils.Geocode(location);
+        var useRadius = rayonRetenu.HasValue && rayonRetenu.Value > 0 && !string.IsNullOrWhiteSpace(lieuRetenu);
+        if (useRadius) center = lpdeBack.Services.GeoUtils.Geocode(lieuRetenu);
 
-        if (!string.IsNullOrWhiteSpace(location) && !(useRadius && center != null))
-            query = query.Where(j => j.Location.Contains(location));
+        if (!string.IsNullOrWhiteSpace(lieuRetenu) && !(useRadius && center != null))
+            query = query.Where(j => j.Location.Contains(lieuRetenu));
 
-        if (salaryMin.HasValue)
-            query = query.Where(j => j.MaxSalary >= salaryMin.Value || (j.MinSalary.HasValue && j.MinSalary >= salaryMin.Value));
+        var salairePlancher = salaryMin ?? requete.SalaireAnnuelMinimum;
+        if (salairePlancher.HasValue)
+            query = query.Where(j => j.MaxSalary >= salairePlancher.Value || (j.MinSalary.HasValue && j.MinSalary >= salairePlancher.Value));
 
         if (salaryMax.HasValue)
             query = query.Where(j => j.MinSalary <= salaryMax.Value || (j.MaxSalary.HasValue && j.MaxSalary <= salaryMax.Value));
@@ -120,28 +161,63 @@ public class JobOffersController : ControllerBase
             query = query.Where(j => j.CreatedAt >= since);
         }
 
-        // Sorting
-        query = sort switch
+        // ── Tri ──
+        //
+        // Le tri « pertinence » n'en etait pas un : il classait par « a la
+        // une », puis « urgent », puis date, sans jamais regarder ce que
+        // le candidat avait tape. Une offre intitulee exactement comme sa
+        // recherche sortait derriere une offre a la une sans rapport.
+        //
+        // Un vrai classement par pertinence se calcule sur l'offre entiere
+        // et ne s'exprime pas en SQL : il faut donc materialiser avant de
+        // trier, comme le fait deja la recherche par rayon. On ne le fait
+        // que lorsqu'il y a une recherche a satisfaire — parcourir le
+        // catalogue sans mot-clef reste pagine par la base.
+        var pertinence = (string.IsNullOrWhiteSpace(sort) || sort == "relevance")
+                         && (requete.MotsClefs.Count > 0 || requete.Metier is not null);
+
+        if (!pertinence)
         {
-            "date" => query.OrderByDescending(j => j.CreatedAt),
-            "salary_asc" => query.OrderBy(j => j.MinSalary ?? 0),
-            "salary_desc" => query.OrderByDescending(j => j.MaxSalary ?? 0),
-            "views" => query.OrderByDescending(j => j.ViewCount),
-            // "relevance" (defaut) : offres a la une puis urgentes puis recentes
-            _ => query.OrderByDescending(j => j.IsFeatured).ThenByDescending(j => j.IsUrgent).ThenByDescending(j => j.CreatedAt),
-        };
+            query = sort switch
+            {
+                "date" => query.OrderByDescending(j => j.CreatedAt),
+                "salary_asc" => query.OrderBy(j => j.MinSalary ?? 0),
+                "salary_desc" => query.OrderByDescending(j => j.MaxSalary ?? 0),
+                "views" => query.OrderByDescending(j => j.ViewCount),
+                _ => query.OrderByDescending(j => j.IsFeatured).ThenByDescending(j => j.IsUrgent).ThenByDescending(j => j.CreatedAt),
+            };
+        }
+        else
+        {
+            // Les plus recentes d'abord : c'est ce lot borne qui sera
+            // ensuite reclasse, autant qu'il contienne ce qui compte.
+            query = query.OrderByDescending(j => j.CreatedAt);
+        }
 
         List<JobOffer> results;
-        if (useRadius && center != null)
+        if (pertinence || (useRadius && center != null))
         {
-            // Rayon (haversine) : filtrage en mémoire, borné pour ne pas tout charger.
+            // Materialisation bornee, pour ne pas charger le catalogue.
             var candidates = await query.Take(3000).ToListAsync();
-            var matched = candidates
-                .Where(j => j.Latitude.HasValue && j.Longitude.HasValue
-                    && lpdeBack.Services.GeoUtils.DistanceKm(center.Value.Lat, center.Value.Lng, j.Latitude.Value, j.Longitude.Value) <= radius!.Value)
-                .ToList();
-            Response.Headers["X-Total-Count"] = matched.Count.ToString();
-            results = matched.Skip((page - 1) * pageSize).Take(pageSize).ToList();
+
+            if (useRadius && center != null)
+            {
+                candidates = candidates
+                    .Where(j => j.Latitude.HasValue && j.Longitude.HasValue
+                        && lpdeBack.Services.GeoUtils.DistanceKm(center.Value.Lat, center.Value.Lng, j.Latitude.Value, j.Longitude.Value) <= rayonRetenu!.Value)
+                    .ToList();
+            }
+
+            if (pertinence)
+            {
+                candidates = candidates
+                    .OrderByDescending(j => lpdeBack.Services.RequeteLibre.Pertinence(requete, j))
+                    .ThenByDescending(j => j.CreatedAt)
+                    .ToList();
+            }
+
+            Response.Headers["X-Total-Count"] = candidates.Count.ToString();
+            results = candidates.Skip((page - 1) * pageSize).Take(pageSize).ToList();
         }
         else
         {
@@ -177,6 +253,54 @@ public class JobOffersController : ControllerBase
         }
 
         return job;
+    }
+
+    /// <summary>
+    /// Ce que le site a compris d'une recherche, avant de la lancer.
+    ///
+    /// La liste d'offres reste un tableau : y glisser un objet
+    /// d'explication aurait casse toutes les pages deja servies aux
+    /// visiteurs le temps d'un deploiement. L'interface interroge donc ce
+    /// point d'entree en parallele, affiche les etiquettes — « alternance »,
+    /// « a moins de 25 km de Perpignan » — et laisse le candidat en
+    /// retirer une. Un filtre applique sans etre montre est un filtre
+    /// qu'on ne peut pas contester.
+    ///
+    /// C'est aussi le seul endroit ou un modele de langage intervient dans
+    /// la recherche, et sous trois conditions : que les regles aient
+    /// laisse une phrase entiere de cote, que le visiteur soit connecte —
+    /// sinon un robot d'indexation epuiserait le quota du jour pour tout
+    /// le monde — et que le quota ne soit pas deja atteint. Les trois
+    /// echouent en silence : on rend ce que les regles ont trouve.
+    /// </summary>
+    [HttpGet("comprendre")]
+    [AllowAnonymous]
+    public async Task<ActionResult<object>> Comprendre([FromQuery] string? q, CancellationToken ct)
+    {
+        var requete = RequeteLibre.Analyser(q);
+        var assiste = false;
+
+        if (GetUserId() is not null && requete.MeriteUneRelecture && _assistant.Disponible)
+        {
+            var avant = requete.Compris.Count;
+            requete = await _assistant.Relire(q!, requete, ct);
+            assiste = requete.Compris.Count > avant;
+        }
+
+        return Ok(new
+        {
+            compris = requete.Compris,
+            metier = requete.Metier,
+            contrat = requete.Contrat,
+            lieu = requete.Lieu,
+            rayonKm = requete.RayonKm,
+            distanciel = requete.Distanciel,
+            salaireAnnuelMinimum = requete.SalaireAnnuelMinimum,
+            motsClefs = requete.MotsClefs,
+            // L'interface doit pouvoir le dire : une phrase relue par un
+            // modele n'a pas le meme statut qu'un filtre tire d'une regle.
+            assiste,
+        });
     }
 
     [HttpGet("categories")]

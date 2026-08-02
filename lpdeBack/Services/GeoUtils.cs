@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text;
+using System.Text.RegularExpressions;
 
 namespace lpdeBack.Services;
 
@@ -90,17 +91,62 @@ public static class GeoUtils
         return sb.ToString().Normalize(NormalizationForm.FormC);
     }
 
+    /// <summary>
+    /// Les villes, du nom le plus long au plus court, prepares une fois.
+    ///
+    /// Le commentaire du tableau annonce cet ordre depuis le debut, mais
+    /// la liste ecrite a la main ne le respecte pas : « Saint-Denis »
+    /// precede « Aix-en-Provence », et la recherche s'arretant a la
+    /// premiere correspondance, un nom court pouvait l'emporter sur un
+    /// nom compose qui le contient. On trie pour de bon, au chargement.
+    /// </summary>
+    private static readonly (string Norm, string Name, double Lat, double Lng)[] _triees =
+        Cities
+            .Select(c => (Norm: Plat(c.Name), c.Name, c.Lat, c.Lng))
+            .OrderByDescending(c => c.Norm.Length)
+            .ToArray();
+
+    /// <summary>
+    /// Sans accents, sans casse et sans ponctuation.
+    ///
+    /// La ponctuation doit tomber des deux cotes de la comparaison. Un
+    /// candidat ecrit « Aix en Provence » aussi souvent que
+    /// « Aix-en-Provence », les sources d'import ecrivent « Aix En
+    /// Provence (13) », et l'analyse de requete a de son cote deja aplati
+    /// la phrase avant d'arriver ici. Comparer un nom qui garde ses traits
+    /// d'union a un texte qui les a perdus ne trouve jamais rien.
+    /// </summary>
+    private static string Plat(string? valeur)
+    {
+        var t = Regex.Replace(Normalize(valeur), "[^a-z0-9]+", " ");
+        return string.Join(' ', t.Split(' ', StringSplitOptions.RemoveEmptyEntries));
+    }
+
+    /// <summary>
+    /// La ville reconnue dans un texte, avec son nom et ses coordonnees.
+    ///
+    /// La comparaison se fait sur des limites de mots. « Contains » tout
+    /// nu reconnaissait « Pau » dans « Paulhan » et dans « pause », ce qui
+    /// suffisait a envoyer une recherche a six cents kilometres de la ou
+    /// elle etait faite.
+    /// </summary>
+    public static (string Nom, double Lat, double Lng)? Trouver(string? texte)
+    {
+        var norm = Plat(texte);
+        if (norm.Length == 0) return null;
+
+        foreach (var c in _triees)
+            if (Regex.IsMatch(norm, $@"(?<![a-z0-9]){Regex.Escape(c.Norm)}(?![a-z0-9])"))
+                return (c.Name, c.Lat, c.Lng);
+
+        return null;
+    }
+
     /// <summary>Retourne les coordonnees d'un lieu (ville FR reconnue) ou null.</summary>
     public static (double Lat, double Lng)? Geocode(string? location)
     {
-        var norm = Normalize(location);
-        if (norm.Length == 0) return null;
-        foreach (var c in Cities)
-        {
-            if (norm.Contains(Normalize(c.Name)))
-                return (c.Lat, c.Lng);
-        }
-        return null;
+        var v = Trouver(location);
+        return v is null ? null : (v.Value.Lat, v.Value.Lng);
     }
 
     /// <summary>Distance en kilometres entre deux points (formule de haversine).</summary>
