@@ -111,6 +111,22 @@ public class NewsletterSenderService : BackgroundService
             return;
         }
 
+        // ── Les offres, une fois pour le paquet ──
+        //
+        // Un bloc « choisies » ou « recherche » sert la meme chose a tout
+        // le monde : le resoudre par destinataire multiplierait la meme
+        // requete par vingt-cinq, puis par trois mille sur la campagne
+        // entiere. Seul le mode « pour chaque abonne » varie, et il se
+        // calcule en memoire sur le vivier charge ici.
+        //
+        // Prepare a chaque paquet et non une fois pour toute la campagne :
+        // un envoi de trois mille messages dure des heures, et une offre
+        // pourvue entre-temps ne doit pas continuer de partir.
+        var blocs = scope.ServiceProvider.GetRequiredService<LettreEnBlocs>();
+        var offres = string.IsNullOrWhiteSpace(campagne.Blocs)
+            ? ContexteOffres.Vide
+            : await blocs.Preparer(LettreEnBlocs.Lire(campagne.Blocs), ct);
+
         foreach (var livraison in aServir)
         {
             if (ct.IsCancellationRequested) return;
@@ -145,7 +161,7 @@ public class NewsletterSenderService : BackgroundService
                 continue;
             }
 
-            var (html, texte) = lettre.Composer(campagne, abonne);
+            var (html, texte) = lettre.Composer(campagne, abonne, offres);
             var sujet = lettre.Rendre(campagne.Subject, abonne, html: false);
             var nom = $"{abonne.FirstName} {abonne.LastName}".Trim();
 

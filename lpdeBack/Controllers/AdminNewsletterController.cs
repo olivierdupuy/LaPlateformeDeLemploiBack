@@ -21,14 +21,17 @@ public class AdminNewsletterController : ControllerBase
     private readonly NewsletterService _lettre;
     private readonly BrevoService _brevo;
     private readonly ActivityLogService _log;
+    private readonly LettreEnBlocs _blocs;
 
     public AdminNewsletterController(AppDbContext context, NewsletterService lettre,
-                                     BrevoService brevo, ActivityLogService log)
+                                     BrevoService brevo, ActivityLogService log,
+                                     LettreEnBlocs blocs)
     {
         _context = context;
         _lettre = lettre;
         _brevo = brevo;
         _log = log;
+        _blocs = blocs;
     }
 
     private string UserId() => User.FindFirstValue(ClaimTypes.NameIdentifier) ?? "";
@@ -164,7 +167,7 @@ public class AdminNewsletterController : ControllerBase
 
         return Ok(new
         {
-            c.Id, c.Subject, c.PreviewText, c.BodyHtml, c.Status,
+            c.Id, c.Subject, c.PreviewText, c.BodyHtml, c.Blocs, c.Status,
             c.SegmentRoles, c.SegmentCategories, c.SegmentCities,
             c.SegmentDepartments, c.SegmentActivity,
             c.CreatedAt, c.SentAt, c.Recipients, c.Delivered, c.Failed, c.CreatedByName,
@@ -186,6 +189,7 @@ public class AdminNewsletterController : ControllerBase
             Subject = (dto.Subject ?? "").Trim(),
             PreviewText = dto.PreviewText,
             BodyHtml = dto.BodyHtml ?? "",
+            Blocs = dto.Blocs,
             CreatedByUserId = UserId(),
             CreatedByName = NomComplet(),
         };
@@ -210,6 +214,7 @@ public class AdminNewsletterController : ControllerBase
         c.Subject = (dto.Subject ?? "").Trim();
         c.PreviewText = dto.PreviewText;
         c.BodyHtml = dto.BodyHtml ?? "";
+        c.Blocs = dto.Blocs;
         Appliquer(c, dto);
         await _context.SaveChangesAsync(ct);
         return Ok(new { message = "Brouillon enregistre." });
@@ -267,43 +272,74 @@ public class AdminNewsletterController : ControllerBase
     /// vide casse une phrase — « Bonjour , » avec sa virgule orpheline.
     /// </summary>
     [HttpPost("campagnes/apercu")]
-    public async Task<ActionResult<object>> Apercu([FromBody] CampagneDto dto, CancellationToken ct)
+    public async Task<ActionResult<object>> Apercu(
+        [FromBody] CampagneDto dto, [FromQuery] int? abonneId, CancellationToken ct)
     {
         var temoin = new NewsletterCampaign
         {
             Subject = dto.Subject ?? "",
             PreviewText = dto.PreviewText,
             BodyHtml = dto.BodyHtml ?? "",
+            Blocs = dto.Blocs,
         };
         Appliquer(temoin, dto);
 
         var vises = _lettre.Destinataires(temoin);
 
-        // On prend l'abonne le mieux renseigne, pas le premier venu : sur un
-        // abonne sans prenom, l'apercu montre « Bonjour , » et l'on croit a
-        // un defaut du gabarit. Les manques se disent plus bas, chiffres.
-        var abonne = await vises
+        // ── Dans la peau de qui ──
+        //
+        // Un bloc d'offres « pour chaque abonne » ne montre rien sur un
+        // destinataire fictif : c'est la ville et les centres d'interet de
+        // quelqu'un de reel qui font la selection. L'apercu s'incarne donc
+        // dans un abonne, et la console laisse en changer — c'est le seul
+        // moyen de verifier qu'une lettre personnalisee tient debout pour
+        // plusieurs personnes, et pas seulement pour la premiere.
+        //
+        // A defaut de choix, on prend le mieux renseigne plutot que le
+        // premier venu : sur un abonne sans prenom, l'apercu montre
+        // « Bonjour , » et l'on croit a un defaut du gabarit. Les manques
+        // se disent plus bas, chiffres.
+        var abonne = abonneId is int id
+            ? await vises.FirstOrDefaultAsync(s => s.Id == id, ct)
+            : null;
+
+        abonne ??= await vises
             .OrderByDescending(s => (s.FirstName != null ? 1 : 0)
                                   + (s.LastName != null ? 1 : 0)
-                                  + (s.City != null ? 1 : 0))
+                                  + (s.City != null ? 1 : 0)
+                                  + (s.Categories != null ? 1 : 0))
             .FirstOrDefaultAsync(ct)
             ?? new NewsletterSubscriber
             {
                 Email = "exemple@destinataire.fr",
                 FirstName = "Camille",
                 LastName = "Fontaine",
-                City = "Lyon",
+                City = "34 - Montpellier",
+                Department = "34",
                 UnsubscribeToken = "apercu",
             };
 
-        var (html, texte) = _lettre.Composer(temoin, abonne);
+        var offres = string.IsNullOrWhiteSpace(temoin.Blocs)
+            ? ContexteOffres.Vide
+            : await _blocs.Preparer(LettreEnBlocs.Lire(temoin.Blocs), ct);
+
+        var (html, texte) = _lettre.Composer(temoin, abonne, offres);
+
+        // Quelques abonnes a proposer, pris parmi les mieux renseignes et
+        // dans des villes differentes : incarner l'apercu dans trois
+        // personnes du meme departement n'apprendrait rien.
+        var incarnations = await vises
+            .OrderByDescending(s => (s.City != null ? 2 : 0) + (s.Categories != null ? 1 : 0))
+            .Take(40)
+            .Select(s => new { s.Id, s.Email, s.FirstName, s.City, s.Categories })
+            .ToListAsync(ct);
 
         // ── Ce qui manquera chez certains ──
         // Un champ de fusion vide ne casse pas l'envoi : il laisse un trou
         // dans la phrase, et personne ne s'en apercoit avant que trois mille
         // messages soient partis avec « Bonjour , ». On compte donc, pour
         // chaque champ employe, combien de destinataires ne l'ont pas.
-        var gabarit = (temoin.Subject ?? "") + (temoin.BodyHtml ?? "");
+        var gabarit = (temoin.Subject ?? "") + (temoin.BodyHtml ?? "") + (temoin.Blocs ?? "");
         var total = await vises.CountAsync(ct);
         var lacunes = new List<object>();
 
@@ -335,8 +371,94 @@ public class AdminNewsletterController : ControllerBase
                 ? $"rendu sur un abonne reel ({abonne.Email})"
                 : "rendu sur un destinataire fictif : aucun abonne ne correspond encore a ce ciblage",
             lacunes,
+            // De qui il s'agit, et qui d'autre on peut incarner.
+            abonne = new { abonne.Id, abonne.Email, abonne.FirstName, abonne.City, abonne.Categories },
+            incarnations,
         });
     }
+
+    // ═══════════════════════════════════════════
+    //  Le catalogue, pour le bloc « offres »
+    // ═══════════════════════════════════════════
+
+    /// <summary>
+    /// De quoi remplir un bloc d'offres a la main.
+    ///
+    /// Deux usages dans le meme point d'entree : chercher une offre a
+    /// ajouter, et relire celles deja choisies. Le second compte autant
+    /// que le premier — sans lui, l'editeur afficherait une liste
+    /// d'identifiants nus, et une offre retiree du catalogue depuis
+    /// resterait dans la lettre sans que personne le voie.
+    ///
+    /// La recherche passe par « RequeteLibre », comme celle du site : le
+    /// redacteur tape « alternance developpeur perpignan » et obtient ce
+    /// qu'un candidat obtiendrait.
+    /// </summary>
+    [HttpGet("offres")]
+    public async Task<ActionResult<object>> Offres(
+        [FromQuery] string? q, [FromQuery] string? ids, CancellationToken ct)
+    {
+        var actives = _context.JobOffers.AsNoTracking()
+            .Where(j => j.IsActive && !j.IsDraft && j.ModerationStatus == "Approved");
+
+        // ── Relire une selection ──
+        if (!string.IsNullOrWhiteSpace(ids))
+        {
+            var voulus = ids.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(s => int.TryParse(s, out var n) ? n : 0)
+                .Where(n => n > 0)
+                .Take(LettreEnBlocs.MaxOffresParBloc)
+                .ToList();
+
+            var trouvees = await actives.Where(j => voulus.Contains(j.Id))
+                .Select(j => new { j.Id, j.Title, j.Company, j.Location, j.ContractType, j.Salary, j.CreatedAt })
+                .ToListAsync(ct);
+
+            // Dans l'ordre du redacteur, et non celui de la base : c'est son
+            // classement, il ne doit pas se defaire tout seul.
+            return Ok(voulus.Select(id => trouvees.FirstOrDefault(j => j.Id == id))
+                            .Where(j => j is not null).ToList());
+        }
+
+        // ── Chercher ──
+        var requete = RequeteLibre.Analyser(q);
+
+        if (!string.IsNullOrWhiteSpace(requete.Contrat))
+        {
+            var contrat = requete.Contrat;
+            actives = actives.Where(j => j.ContractType == contrat);
+        }
+
+        if (requete.MotsClefs.Count > 0)
+        {
+            var mots = requete.MotsClefs.Take(4).ToList();
+            actives = actives.Where(j => mots.Any(m =>
+                j.Title.Contains(m) || j.Company.Contains(m) || (j.Tags != null && j.Tags.Contains(m))));
+        }
+
+        if (!string.IsNullOrWhiteSpace(requete.Lieu))
+        {
+            var lieu = requete.Lieu;
+            actives = actives.Where(j => j.Location.Contains(lieu));
+        }
+
+        var candidates = await actives
+            .OrderByDescending(j => j.CreatedAt)
+            .Take(200)
+            .ToListAsync(ct);
+
+        var classees = candidates
+            .OrderByDescending(j => RequeteLibre.Pertinence(requete, j))
+            .ThenByDescending(j => j.CreatedAt)
+            .Take(25)
+            .Select(j => new { j.Id, j.Title, j.Company, j.Location, j.ContractType, j.Salary, j.CreatedAt });
+
+        return Ok(classees);
+    }
+
+    /// <summary>Les familles de metiers, pour le bloc d'offres en mode « recherche ».</summary>
+    [HttpGet("metiers")]
+    public ActionResult<object> Metiers() => Ok(LexiqueMetiers.Familles);
 
     /// <summary>Un envoi d'essai a soi-meme, avant d'ecrire a tout le monde.</summary>
     [HttpPost("campagnes/{id:int}/essai")]
@@ -350,6 +472,11 @@ public class AdminNewsletterController : ControllerBase
         if (string.IsNullOrWhiteSpace(destinataire))
             return BadRequest(new { message = "Aucune adresse de destination." });
 
+        // L'essai part sur l'administrateur lui-meme, qui n'est pas abonne
+        // et n'a donc ni ville ni centres d'interet. Un bloc d'offres
+        // « pour chaque abonne » n'aurait rien a lui proposer : c'est le
+        // repli qui joue, et c'est justement ce qu'il faut verifier — un
+        // essai qui montre un bloc vide annonce une lettre trouee.
         var temoin = new NewsletterSubscriber
         {
             Email = destinataire,
@@ -357,7 +484,12 @@ public class AdminNewsletterController : ControllerBase
             LastName = User.FindFirstValue(ClaimTypes.Surname),
             UnsubscribeToken = "essai",
         };
-        var (html, texte) = _lettre.Composer(c, temoin);
+
+        var offres = string.IsNullOrWhiteSpace(c.Blocs)
+            ? ContexteOffres.Vide
+            : await _blocs.Preparer(LettreEnBlocs.Lire(c.Blocs), ct);
+
+        var (html, texte) = _lettre.Composer(c, temoin, offres);
         var r = await _brevo.Envoyer(destinataire, null,
             "[Essai] " + _lettre.Rendre(c.Subject, temoin, html: false), html, texte, null, ct);
 
@@ -385,7 +517,14 @@ public class AdminNewsletterController : ControllerBase
         if (c == null) return NotFound();
         if (c.Status != "Draft")
             return Conflict(new { message = "Cette campagne n'est plus un brouillon." });
-        if (string.IsNullOrWhiteSpace(c.Subject) || string.IsNullOrWhiteSpace(c.BodyHtml))
+        // Un contenu, sous l'une ou l'autre forme : les blocs pour une
+        // lettre ecrite dans l'editeur, le HTML pour celles d'avant. Ne
+        // verifier que « BodyHtml » refuserait desormais toute campagne
+        // faite de blocs, c'est-a-dire toutes les nouvelles.
+        var aUnContenu = !string.IsNullOrWhiteSpace(c.BodyHtml)
+                         || LettreEnBlocs.Lire(c.Blocs).Count > 0;
+
+        if (string.IsNullOrWhiteSpace(c.Subject) || !aUnContenu)
             return BadRequest(new { message = "Un objet et un contenu sont necessaires." });
         if (!_brevo.EstConfigure)
             return StatusCode(StatusCodes.Status501NotImplemented,
@@ -540,6 +679,17 @@ public class CampagneDto
     // avant meme d'atteindre une boite.
     [StringLength(200_000, ErrorMessage = "Le message est trop volumineux : les messageries le rejetteraient.")]
     public string? BodyHtml { get; set; }
+
+    /// <summary>
+    /// La lettre en blocs. Prend le pas sur « BodyHtml » quand elle est
+    /// renseignee ; celui-ci reste pour les campagnes ecrites avant
+    /// l'editeur, qui doivent continuer de partir.
+    ///
+    /// Le texte des blocs est echappe au rendu : le champ n'a donc pas
+    /// besoin d'interdire le balisage, il ne sera jamais interprete.
+    /// </summary>
+    [StringLength(200_000, ErrorMessage = "Le message est trop volumineux : les messageries le rejetteraient.")]
+    public string? Blocs { get; set; }
 
     public List<string>? Roles { get; set; }
     public List<string>? Categories { get; set; }

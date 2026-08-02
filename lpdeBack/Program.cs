@@ -531,6 +531,10 @@ builder.Services.AddScoped<lpdeBack.Services.DeuxFacteursSms>();
 // de passe oublies ruinerait la reputation de celle-ci, et les mots de passe
 // oublies cesseraient d'arriver avec le reste.
 builder.Services.AddSingleton<lpdeBack.Services.BrevoService>();
+// La lettre faite de blocs : lecture, resolution des offres, rendu en
+// HTML de courriel. Enregistre avant NewsletterService, qui s'en sert
+// pour composer le corps de chaque message.
+builder.Services.AddScoped<lpdeBack.Services.LettreEnBlocs>();
 builder.Services.AddScoped<lpdeBack.Services.NewsletterService>();
 // Ce qu'on a le droit d'envoyer, et a qui : preferences par categorie
 // et adresses qui ne repondent plus.

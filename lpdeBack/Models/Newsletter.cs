@@ -95,6 +95,22 @@ public class NewsletterCampaign
 
     public string BodyHtml { get; set; } = string.Empty;
 
+    /// <summary>
+    /// La lettre en blocs, au format JSON.
+    ///
+    /// Remplace le HTML saisi a la main, qui obligeait a ecrire des
+    /// tableaux et des styles en ligne de memoire, et ne permettait pas
+    /// de mettre une offre dans la lettre d'un site d'emploi autrement
+    /// qu'en recopiant un intitule et un lien.
+    ///
+    /// « BodyHtml » reste renseigne : il porte les campagnes ecrites
+    /// avant les blocs, et il recoit le rendu fige d'une campagne partie
+    /// — modifier une lettre deja envoyee rendrait ses statistiques
+    /// incomprehensibles. Quand cette colonne est vide, c'est « BodyHtml »
+    /// qui sert.
+    /// </summary>
+    public string? Blocs { get; set; }
+
     /// <summary>Draft, Sending, Sent, Failed, Cancelled.</summary>
     [MaxLength(20)] public string Status { get; set; } = "Draft";
 

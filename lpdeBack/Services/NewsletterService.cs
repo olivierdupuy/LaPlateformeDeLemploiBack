@@ -22,14 +22,17 @@ public class NewsletterService
     private readonly IEmailSender _mail;
     private readonly IConfiguration _config;
     private readonly ILogger<NewsletterService> _log;
+    private readonly LettreEnBlocs _blocs;
 
     public NewsletterService(AppDbContext context, IEmailSender mail,
-                             IConfiguration config, ILogger<NewsletterService> log)
+                             IConfiguration config, ILogger<NewsletterService> log,
+                             LettreEnBlocs blocs)
     {
         _context = context;
         _mail = mail;
         _config = config;
         _log = log;
+        _blocs = blocs;
     }
 
     private string Site => (_config["App:PublicUrl"] ?? "").TrimEnd('/');
@@ -284,9 +287,24 @@ public class NewsletterService
     /// n'est pas une erreur qu'on peut laisser dependre de l'attention de
     /// celui qui redige a onze heures du soir.
     /// </summary>
-    public (string Html, string Texte) Composer(NewsletterCampaign c, NewsletterSubscriber a)
+    /// <param name="offres">
+    /// Les offres deja resolues pour cette campagne. Preparees une fois
+    /// avant la boucle d'envoi, jamais dedans : un bloc « choisies » ou
+    /// « recherche » sert la meme chose a tout le monde, et le remettre en
+    /// base pour chaque destinataire multiplierait la meme requete par
+    /// trois mille. Seul le mode « abonne » varie, et il se calcule en
+    /// memoire sur le vivier que ce contexte porte.
+    /// </param>
+    public (string Html, string Texte) Composer(
+        NewsletterCampaign c, NewsletterSubscriber a, ContexteOffres? offres = null)
     {
-        var corps = Rendre(c.BodyHtml, a);
+        // Les blocs quand il y en a, le HTML d'origine sinon : une
+        // campagne ecrite avant l'editeur doit continuer de partir.
+        var brut = string.IsNullOrWhiteSpace(c.Blocs)
+            ? c.BodyHtml
+            : _blocs.Rendre(LettreEnBlocs.Lire(c.Blocs), offres ?? ContexteOffres.Vide, a);
+
+        var corps = Rendre(brut, a);
         var lien = LienDesinscription(a);
         var apercu = string.IsNullOrWhiteSpace(c.PreviewText) ? "" : Rendre(c.PreviewText, a);
 
