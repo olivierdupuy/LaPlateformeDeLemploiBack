@@ -36,6 +36,26 @@ namespace lpdeBack.Tests;
 ///   — l'environnement est « Test », ce que le demarrage reconnait pour
 ///     sauter migrations et donnees de demonstration.
 /// </summary>
+/// <summary>
+/// Un seul hote pour toutes les classes de tests d'integration.
+///
+/// xUnit donne une instance de fixture *par classe* avec
+/// <c>IClassFixture</c> ; deux classes montaient donc deux applications
+/// dans le meme processus. Plusieurs choses n'y survivent pas — le
+/// <c>FirebaseApp</c> par defaut est global, le journal Serilog aussi —
+/// et la seconde classe echouait au demarrage, pour une raison sans
+/// rapport avec ce qu'elle verifiait.
+///
+/// La collection partage une instance unique. Elle evite aussi de
+/// demarrer l'application deux fois, ce qui est le plus cher de tout
+/// ce que font ces tests.
+/// </summary>
+[CollectionDefinition(Nom)]
+public class CollectionApi : ICollectionFixture<ApiEnMemoire>
+{
+    public const string Nom = "api";
+}
+
 public class ApiEnMemoire : WebApplicationFactory<Program>
 {
     private SqliteConnection? _connexion;

@@ -61,8 +61,15 @@ builder.Host.UseSerilog((contexte, services, config) => config
             "{Timestamp:yyyy-MM-dd HH:mm:ss.fff zzz} [{Level:u3}] {Message:lj} {Properties:j}{NewLine}{Exception}"));
 
 // Firebase Admin SDK
+//
+// « DefaultInstance is null » : l'instance par defaut est globale au
+// processus, et « Create » leve si elle existe deja. En production
+// l'application ne demarre qu'une fois, mais deux classes de tests
+// d'integration montent deux hotes dans le meme processus — la seconde
+// echouait alors au demarrage, pour une raison sans rapport avec ce
+// qu'elle verifiait.
 var firebaseCredPath = Path.Combine(builder.Environment.ContentRootPath, "firebase-service-account.json");
-if (File.Exists(firebaseCredPath))
+if (File.Exists(firebaseCredPath) && FirebaseApp.DefaultInstance is null)
 {
     FirebaseApp.Create(new AppOptions
     {

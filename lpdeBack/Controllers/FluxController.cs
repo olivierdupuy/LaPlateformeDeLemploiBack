@@ -74,7 +74,7 @@ public class FluxController : ControllerBase
             .Take(Plafond)
             .ToListAsync();
 
-        var sortie = new StringBuilder();
+        var sortie = new EcrivainUtf8();
         var reglages = new XmlWriterSettings
         {
             Indent = true,
@@ -86,7 +86,21 @@ public class FluxController : ControllerBase
             CheckCharacters = false,
         };
 
-        await using (var ecrivain = XmlWriter.Create(sortie, reglages))
+        // « using » et non « await using ».
+        //
+        // Le flux rendait 500 en production, et seulement la : la
+        // liberation asynchrone d'un XmlWriter exige
+        // « XmlWriterSettings.Async = true », faute de quoi elle leve a
+        // la fermeture — apres que tout le document a ete ecrit sans
+        // erreur. Toutes les ecritures ci-dessous sont synchrones ;
+        // c'est donc la fermeture qui doit l'etre, pas les reglages qui
+        // doivent devenir asynchrones.
+        //
+        // Personne ne l'avait vu parce que personne ne lit ce flux :
+        // il sert les agregateurs, qui le relisent sans que cela se
+        // remarque. Une panne s'y traduit, des semaines plus tard, par
+        // une audience qui n'arrive plus.
+        using (var ecrivain = XmlWriter.Create(sortie, reglages))
         {
             ecrivain.WriteStartDocument();
             ecrivain.WriteStartElement("source");
@@ -186,6 +200,25 @@ public class FluxController : ControllerBase
             ["numberOfItems"] = offres.Count,
             ["itemListElement"] = entrees,
         });
+    }
+
+    /// <summary>
+    /// Un ecrivain de chaine qui se declare en UTF-8.
+    ///
+    /// <see cref="XmlWriter"/> prend l'encodage du prologue chez
+    /// l'ecrivain, et non dans ses reglages, quand il ecrit vers une
+    /// chaine — une chaine .NET etant en UTF-16, il annoncait
+    /// « encoding="utf-16" » dans un document servi en UTF-8, et le
+    /// <c>Encoding = Encoding.UTF8</c> des reglages n'y changeait rien.
+    ///
+    /// Un analyseur qui lit le fichier sans son en-tete HTTP — c'est le
+    /// cas des agregateurs, qui le telechargent puis le traitent — se
+    /// fie au prologue. Il rejette le document, ou decode les accents
+    /// de travers : « Développeur » pour tout le catalogue.
+    /// </summary>
+    private sealed class EcrivainUtf8 : StringWriter
+    {
+        public override Encoding Encoding => Encoding.UTF8;
     }
 
     private static void Cdata(XmlWriter ecrivain, string nom, string? valeur)

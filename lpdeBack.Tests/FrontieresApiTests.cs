@@ -17,7 +17,8 @@ namespace lpdeBack.Tests;
 /// autorisation. Un test qui appelle la methode du controleur en direct
 /// aurait rapporte « vert » sur les cinq failles ci-dessous.
 /// </summary>
-public class FrontieresApiTests : IClassFixture<ApiEnMemoire>
+[Collection(CollectionApi.Nom)]
+public class FrontieresApiTests
 {
     private readonly ApiEnMemoire _api;
 
