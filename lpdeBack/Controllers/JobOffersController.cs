@@ -28,6 +28,14 @@ public class JobOffersController : ControllerBase
     private readonly lpdeBack.Services.QualiteCatalogue _qualite;
     private readonly lpdeBack.Services.AssistantIa _assistant;
 
+    /// <summary>
+    /// En deca de combien d'offres trouvees dans les colonnes courtes on
+    /// va fouiller les descriptions. Une page standard : au-dessus, le
+    /// candidat a deja de quoi lire, et les offres que la description
+    /// aurait ajoutees sortiraient de toute facon en fin de classement.
+    /// </summary>
+    private const int SeuilDescriptions = 24;
+
     public JobOffersController(AppDbContext context, UserManager<AppUser> userManager, IMemoryCache cache, PerimetreRecruteur perimetre,
                                lpdeBack.Services.FacturationService facturation, lpdeBack.Services.QualiteCatalogue qualite,
                                lpdeBack.Services.AssistantIa assistant)
@@ -89,23 +97,18 @@ public class JobOffersController : ControllerBase
         // la lecture de sa phrase n'est qu'une deduction.
         var requete = RequeteLibre.Analyser(search);
 
-        if (requete.MotsClefs.Count > 0)
-        {
-            // Un OU entre les mots, pas un ET : « developpeur react »
-            // doit ramener les annonces de developpeur meme quand elles
-            // ne citent pas React, quitte a les classer derriere. Le tri
-            // par pertinence, plus bas, fait le reste.
-            var mots = requete.MotsClefs.Take(6).ToList();
-            query = query.Where(j => mots.Any(m =>
-                j.Title.Contains(m) || j.Company.Contains(m)
-                || (j.Tags != null && j.Tags.Contains(m)) || j.Description.Contains(m)));
-        }
-        else if (!string.IsNullOrWhiteSpace(search) && !requete.ADesFiltres)
-        {
-            // Rien d'exploitable n'a ete tire de la phrase : on garde
-            // l'ancien comportement plutot que de tout renvoyer.
-            query = query.Where(j => j.Title.Contains(search) || j.Company.Contains(search) || j.Description.Contains(search));
-        }
+        // Les termes a chercher en plein texte. Un OU entre les mots, pas
+        // un ET : « developpeur react » doit ramener les annonces de
+        // developpeur meme quand elles ne citent pas React, quitte a les
+        // classer derriere. Le tri par pertinence, plus bas, fait le reste.
+        //
+        // Quand la phrase n'a rien donne d'exploitable, on la cherche
+        // entiere plutot que de renvoyer le catalogue.
+        var termes = requete.MotsClefs.Count > 0
+            ? requete.MotsClefs.Take(6).ToList()
+            : !string.IsNullOrWhiteSpace(search) && !requete.ADesFiltres
+                ? new List<string> { search.Trim() }
+                : new List<string>();
 
         if (!string.IsNullOrWhiteSpace(category))
             query = query.Where(j => j.Category == category);
@@ -176,56 +179,96 @@ public class JobOffersController : ControllerBase
         var pertinence = (string.IsNullOrWhiteSpace(sort) || sort == "relevance")
                          && (requete.MotsClefs.Count > 0 || requete.Metier is not null);
 
-        if (!pertinence)
+        // Trier, puis rendre une page. Le socle des filtres est fige a ce
+        // stade ; seul le plein texte reste a poser, et il peut l'etre de
+        // deux facons — d'ou la fonction plutot que la suite d'instructions.
+        async Task<(List<JobOffer> Page, int Total)> Servir(IQueryable<JobOffer> filtre)
         {
-            query = sort switch
+            filtre = pertinence
+                // Les plus recentes d'abord : c'est ce lot borne qui sera
+                // ensuite reclasse, autant qu'il contienne ce qui compte.
+                ? filtre.OrderByDescending(j => j.CreatedAt)
+                : sort switch
+                {
+                    "date" => filtre.OrderByDescending(j => j.CreatedAt),
+                    "salary_asc" => filtre.OrderBy(j => j.MinSalary ?? 0),
+                    "salary_desc" => filtre.OrderByDescending(j => j.MaxSalary ?? 0),
+                    "views" => filtre.OrderByDescending(j => j.ViewCount),
+                    _ => filtre.OrderByDescending(j => j.IsFeatured).ThenByDescending(j => j.IsUrgent).ThenByDescending(j => j.CreatedAt),
+                };
+
+            if (pertinence || (useRadius && center != null))
             {
-                "date" => query.OrderByDescending(j => j.CreatedAt),
-                "salary_asc" => query.OrderBy(j => j.MinSalary ?? 0),
-                "salary_desc" => query.OrderByDescending(j => j.MaxSalary ?? 0),
-                "views" => query.OrderByDescending(j => j.ViewCount),
-                _ => query.OrderByDescending(j => j.IsFeatured).ThenByDescending(j => j.IsUrgent).ThenByDescending(j => j.CreatedAt),
-            };
+                // Materialisation bornee, pour ne pas charger le catalogue.
+                var candidates = await filtre.Take(3000).ToListAsync();
+
+                if (useRadius && center != null)
+                {
+                    candidates = candidates
+                        .Where(j => j.Latitude.HasValue && j.Longitude.HasValue
+                            && lpdeBack.Services.GeoUtils.DistanceKm(center.Value.Lat, center.Value.Lng, j.Latitude.Value, j.Longitude.Value) <= rayonRetenu!.Value)
+                        .ToList();
+                }
+
+                if (pertinence)
+                {
+                    candidates = candidates
+                        .OrderByDescending(j => lpdeBack.Services.RequeteLibre.Pertinence(requete, j))
+                        .ThenByDescending(j => j.CreatedAt)
+                        .ToList();
+                }
+
+                return (candidates.Skip((page - 1) * pageSize).Take(pageSize).ToList(), candidates.Count);
+            }
+
+            // Pagination côté SQL — indispensable avec un gros volume d'offres.
+            var total = await filtre.CountAsync();
+            return (await filtre.Skip((page - 1) * pageSize).Take(pageSize).ToListAsync(), total);
         }
-        else
-        {
-            // Les plus recentes d'abord : c'est ce lot borne qui sera
-            // ensuite reclasse, autant qu'il contienne ce qui compte.
-            query = query.OrderByDescending(j => j.CreatedAt);
-        }
+
+        // ── Le plein texte, en deux temps ──
+        //
+        // Chercher dans les descriptions coute dix fois le reste : elles
+        // font mille quatre cents caracteres de moyenne et vivent hors
+        // page, quand le titre, la societe et les etiquettes tiennent dans
+        // un index. Sur le catalogue reel, « developpeur » demandait
+        // 4 554 ms avec les descriptions et 165 ms sans.
+        //
+        // On les ouvre donc en second recours, quand les colonnes courtes
+        // ne rendent pas de quoi remplir une page. Une recherche rare —
+        // celle qui justifie qu'on aille fouiller les descriptions — rend
+        // exactement les memes offres qu'avant. Une recherche courante n'y
+        // va plus : ce qu'elle y perdait etait de toute facon classe en
+        // queue de liste par la pertinence, qui note un titre vingt-cinq
+        // et une description un.
+        //
+        // Le seuil est une constante et non « page x pageSize », comme il
+        // l'etait d'abord : sinon le nombre total d'offres annonce pour
+        // une meme recherche changeait selon la taille de page demandee.
+        // « kubernetes » rendait une offre en pageSize=1 et soixante-treize
+        // en pageSize=24.
+        IQueryable<JobOffer> AvecLesMots(bool descriptions) => descriptions
+            ? query.Where(j => termes.Any(m => j.Title.Contains(m) || j.Company.Contains(m)
+                  || (j.Tags != null && j.Tags.Contains(m)) || j.Description.Contains(m)))
+            : query.Where(j => termes.Any(m => j.Title.Contains(m) || j.Company.Contains(m)
+                  || (j.Tags != null && j.Tags.Contains(m))));
 
         List<JobOffer> results;
-        if (pertinence || (useRadius && center != null))
+        int total;
+
+        if (termes.Count == 0)
         {
-            // Materialisation bornee, pour ne pas charger le catalogue.
-            var candidates = await query.Take(3000).ToListAsync();
-
-            if (useRadius && center != null)
-            {
-                candidates = candidates
-                    .Where(j => j.Latitude.HasValue && j.Longitude.HasValue
-                        && lpdeBack.Services.GeoUtils.DistanceKm(center.Value.Lat, center.Value.Lng, j.Latitude.Value, j.Longitude.Value) <= rayonRetenu!.Value)
-                    .ToList();
-            }
-
-            if (pertinence)
-            {
-                candidates = candidates
-                    .OrderByDescending(j => lpdeBack.Services.RequeteLibre.Pertinence(requete, j))
-                    .ThenByDescending(j => j.CreatedAt)
-                    .ToList();
-            }
-
-            Response.Headers["X-Total-Count"] = candidates.Count.ToString();
-            results = candidates.Skip((page - 1) * pageSize).Take(pageSize).ToList();
+            (results, total) = await Servir(query);
         }
         else
         {
-            // Pagination côté SQL — indispensable avec un gros volume d'offres.
-            var total = await query.CountAsync();
-            Response.Headers["X-Total-Count"] = total.ToString();
-            results = await query.Skip((page - 1) * pageSize).Take(pageSize).ToListAsync();
+            (results, total) = await Servir(AvecLesMots(false));
+
+            if (total < SeuilDescriptions)
+                (results, total) = await Servir(AvecLesMots(true));
         }
+
+        Response.Headers["X-Total-Count"] = total.ToString();
 
         return results;
     }

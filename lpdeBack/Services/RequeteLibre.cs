@@ -9,18 +9,20 @@ namespace lpdeBack.Services;
 /// <param name="Reste">
 /// Les mots qui n'ont ete rattaches a aucun filtre, dans leur forme
 /// d'origine — accents compris. Ce ne sont pas des dechets : ce sont les
-/// mots-clefs, et c'est eux qu'on cherche en plein texte. Ils gardent
-/// leurs accents parce que la base, elle, en a : chercher
-/// « developpeur » sans accent dans une colonne collationnee en
-/// « CP1_CI_AS » ne trouve pas « Developpeur ».
+/// mots-clefs, et c'est eux qu'on cherche en plein texte.
 /// </param>
 /// <param name="MotsClefs">
 /// Le reliquat, decoupe et debarrasse des mots vides. C'est ce qu'on
 /// envoie a la base. « recherche », « poste », « equipe » n'y figurent
 /// pas : les passer a un « LIKE » sur la description ramene le catalogue
 /// entier, ce qui revient a ne pas filtrer tout en le faisant payer.
-/// Les mots gardent leur forme d'origine, accents compris — la colonne,
-/// elle, en a.
+///
+/// Les mots gardent leur forme d'origine plutot que d'etre aplatis, mais
+/// cela ne decide plus de ce qu'on trouve : les trois colonnes cherchees
+/// sont collationnees en « CP1_CI_AI » depuis la migration
+/// « RechercheSansAccents », et « developpeur » y vaut « Developpeur ».
+/// Auparavant l'accent manquant coutait quatre-vingt-sept pour cent du
+/// resultat.
 /// </param>
 /// <param name="Compris">
 /// Ce qui a ete reconnu, dit en francais. A afficher au candidat : une

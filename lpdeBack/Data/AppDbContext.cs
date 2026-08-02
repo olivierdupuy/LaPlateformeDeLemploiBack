@@ -82,6 +82,27 @@ public class AppDbContext : IdentityDbContext<AppUser>
             // L'expiration des offres importees balaie par source et par
             // date de derniere vue.
             entity.HasIndex(e => new { e.ExternalSource, e.VueChezLaSourceLe });
+
+            // ── L'index de la recherche plein texte ──
+            //
+            // « LIKE '%mot%' » commence par un joker : aucun index ne peut
+            // situer la valeur, la base est condamnee a lire chaque ligne.
+            // Ce qu'un index peut encore faire, c'est reduire ce qu'il y a
+            // a lire. Les trois colonnes cherchees tiennent en deux mille
+            // caracteres ; la table, elle, traine une description en
+            // « nvarchar(max) » de mille quatre cents caracteres de
+            // moyenne. Balayer l'index plutot que la table, sur les cent
+            // dix-neuf mille offres du catalogue reel : 478 ms au lieu de
+            // 4 554, pour dix-huit megaoctets.
+            //
+            // Les trois premieres clefs sont les egalites que porte toute
+            // recherche publique, et la date descendante donne l'ordre du
+            // tri sans passer par un tri.
+            entity.HasIndex(e => new { e.IsActive, e.IsDraft, e.ModerationStatus, e.CreatedAt })
+                  .IsDescending(false, false, false, true)
+                  .IncludeProperties(e => new { e.Title, e.Company, e.Tags })
+                  .HasDatabaseName("IX_JobOffers_Recherche");
+
             entity.HasOne(j => j.CreatedByUser).WithMany().HasForeignKey(j => j.CreatedByUserId).OnDelete(DeleteBehavior.SetNull);
         });
 
