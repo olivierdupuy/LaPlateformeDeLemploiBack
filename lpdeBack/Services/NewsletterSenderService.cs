@@ -54,8 +54,21 @@ public class NewsletterSenderService : BackgroundService
         {
             do
             {
-                try { await ServirUneCampagne(ct); }
-                catch (Exception e) { _log.LogError(e, "Expedition de campagne en echec"); }
+                // La boucle tourne toutes les vingt secondes et ne fait
+                // rien la plupart du temps ; c'est justement ce qu'on
+                // veut savoir — qu'elle tourne encore. Une file qui
+                // s'arrete ne se voit autrement qu'aux campagnes qui ne
+                // partent pas, et on l'apprend par le destinataire.
+                try
+                {
+                    await ServirUneCampagne(ct);
+                    EtatDesServices.Noter("envoi-newsletter", true, "file relevée");
+                }
+                catch (Exception e)
+                {
+                    _log.LogError(e, "Expedition de campagne en echec");
+                    EtatDesServices.Noter("envoi-newsletter", false, e.Message);
+                }
             }
             while (await timer.WaitForNextTickAsync(ct));
         }

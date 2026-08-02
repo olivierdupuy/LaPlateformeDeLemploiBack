@@ -27,9 +27,29 @@ public static class EtatDesServices
 
     private static readonly ConcurrentDictionary<string, Passage> _passages = new();
 
-    /// <summary>Au-dela de ce retard, une tache est consideree en peine.</summary>
+    /// <summary>
+    /// Au-dela de ce retard, une tache est consideree en peine.
+    ///
+    /// Toute tache de fond doit figurer ici. « import-offres » y
+    /// manquait, et c'etait la plus importante des quatre : elle tient
+    /// la fraicheur des cent vingt mille offres du catalogue. Elle a
+    /// cesse de passer pendant six jours sans que l'ecran
+    /// d'exploitation en dise un mot — il annoncait « degrade » pour
+    /// une autre raison, et la seule trace du vrai probleme etait un
+    /// « 6.3 j » en rouge dans un tableau, plus bas.
+    ///
+    /// Une tache qu'on oublie de declarer ici n'est pas surveillee a
+    /// moitie : elle ne l'est pas du tout.
+    ///
+    /// La cadence vaut le double de la periode reelle. Un import qui
+    /// tourne toutes les six heures et qui en saute un n'est pas un
+    /// incident — le partenaire a pu ne pas repondre une fois. Deux
+    /// d'affilee, si.
+    /// </summary>
     private static readonly Dictionary<string, TimeSpan> _cadences = new()
     {
+        ["import-offres"] = TimeSpan.FromHours(12),
+        ["envoi-newsletter"] = TimeSpan.FromHours(2),
         ["redaction-newsletter"] = TimeSpan.FromHours(18),
         ["purge"] = TimeSpan.FromHours(36),
     };
