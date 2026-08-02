@@ -25,12 +25,18 @@ public class ApplicationsController : ControllerBase
     private readonly IEmailSender _mail;
     private readonly IConfiguration _config;
     private readonly ILogger<ApplicationsController> _journal;
+    private readonly lpdeBack.Services.WebhookService _webhooks;
+    private readonly lpdeBack.Services.ConsentementCourriel _consentement;
 
     public ApplicationsController(AppDbContext context, IHubContext<ChatHub> hubContext,
                                   PushNotificationService pushService, ActivityLogService log,
                                   IEmailSender mail, IConfiguration config,
-                                  ILogger<ApplicationsController> journal, PerimetreRecruteur perimetre)
+                                  ILogger<ApplicationsController> journal, PerimetreRecruteur perimetre,
+                                  lpdeBack.Services.WebhookService webhooks,
+                                  lpdeBack.Services.ConsentementCourriel consentement)
     {
+        _consentement = consentement;
+        _webhooks = webhooks;
         _perimetre = perimetre;
         _log = log;
         _context = context;
@@ -56,9 +62,39 @@ public class ApplicationsController : ControllerBase
     /// L'echec se journalise, et rien de plus. C'est le seul endroit du
     /// code ou avaler une exception est la bonne conduite.
     /// </summary>
-    private async Task Prevenir(Courriel? message, string quoi)
+    private async Task Prevenir(Courriel? message, string quoi, string categorie = "candidatures")
     {
         if (message == null) return;
+
+        // ── Ce que la personne a accepte de recevoir ──
+        //
+        // Le centre de preferences enregistrait un refus que personne ne
+        // lisait : on continuait d'ecrire a qui avait decoche la case.
+        // Un refus sans effet est pire que pas de case du tout — il
+        // fait croire au reglage, puis au mensonge.
+        //
+        // Le controle couvre aussi les adresses qui ne repondent plus :
+        // chaque rejet abime la reputation du domaine, et cette
+        // reputation abimee fait tomber en indesirable les courriels
+        // qui, eux, etaient attendus.
+        try
+        {
+            if (!await _consentement.Autorise(message.Destinataire, categorie))
+            {
+                _journal.LogInformation(
+                    "Courriel « {Quoi} » non expedie : la categorie « {Categorie} » est refusee ou l'adresse est bloquee.",
+                    quoi, categorie);
+                return;
+            }
+        }
+        catch (Exception ex)
+        {
+            // La base est injoignable : on expedie plutot que de se
+            // taire. Rater un accuse de candidature nuit plus que de
+            // l'envoyer une fois de trop a qui l'avait refuse.
+            _journal.LogWarning(ex, "Lecture des preferences impossible — envoi maintenu");
+        }
+
         try
         {
             await _mail.Envoyer(message);
@@ -523,6 +559,32 @@ public class ApplicationsController : ControllerBase
 
         _context.Applications.Add(app);
         await _context.SaveChangesAsync();
+
+        // ── Systemes tiers abonnes ──
+        // Un recruteur equipe d'un logiciel de recrutement veut le savoir
+        // sans interroger l'API toutes les minutes. La diffusion
+        // n'attend pas la reponse d'en face : le candidat qui vient de
+        // postuler n'a pas a patienter pendant qu'un serveur tiers
+        // reflechit. Un echec ici ne doit pas perdre la candidature.
+        if (job.CreatedByUserId is not null)
+        {
+            try
+            {
+                await _webhooks.Diffuser(job.CreatedByUserId, "candidature.creee", new
+                {
+                    candidatureId = app.Id,
+                    offreId = job.Id,
+                    offre = job.Title,
+                    candidat = new { nom = app.FullName, email = app.Email, ville = app.City },
+                    adequation = app.QualificationScore,
+                    deposeeLe = app.AppliedAt,
+                });
+            }
+            catch (Exception ex)
+            {
+                _journal.LogWarning(ex, "Diffusion webhook « candidature.creee » impossible");
+            }
+        }
 
         // Reponse automatique du recruteur au candidat (message dans la conversation)
         if (!string.IsNullOrWhiteSpace(job.AutoReplyMessage) && job.CreatedByUserId != null)

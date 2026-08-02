@@ -18,6 +18,17 @@ public static class ModelesCourriel
 {
     private const string Marque = "La Plateforme de l'emploi";
 
+    /// <summary>
+    /// L'adresse publique du site, pour les liens du pied de page.
+    ///
+    /// En dur et non lue de la configuration : ces modeles sont
+    /// statiques — ils se composent sans injection, ce qui les rend
+    /// testables sans monter d'application. Les liens qui varient selon
+    /// l'environnement (reinitialisation, confirmation) sont deja passes
+    /// en parametre par leurs appelants, qui, eux, ont la configuration.
+    /// </summary>
+    private const string SiteUrl = "https://www.laplateformedelemploi.com";
+
     /// <summary>Le gabarit commun. Les couleurs suivent celles du site.</summary>
     private static string Envelopper(string titre, string corps, string? bouton = null, string? lien = null)
     {
@@ -53,6 +64,14 @@ public static class ModelesCourriel
                   Ce message vous est adresse parce qu'un compte existe a cette adresse sur {Marque}.
                   Il part automatiquement, mais il n'est pas sans retour : repondez a ce message
                   si quelque chose vous parait anormal, quelqu'un vous lira.
+                  <br /><br />
+                  <!-- Le lien vers les preferences est au pied de chaque
+                       message, et non de la seule lettre d'information.
+                       Quelqu'un qui recoit trop d'accuses de candidature
+                       n'avait jusqu'ici qu'un bouton sous la main :
+                       « indesirable ». Celui-la emporte tout le reste
+                       avec lui, y compris les mots de passe oublies. -->
+                  <a href="{SiteUrl}/preferences-courriel" style="color:#15616d">Choisir ce que vous recevez</a>
                 </td></tr>
               </table>
             </body></html>
@@ -615,5 +634,96 @@ public static class ModelesCourriel
             """;
         return new Courriel(destinataire, $"{titre} — {poste}",
                             Envelopper(titre, corps, "Voir ma candidature", lien), texte);
+    }
+
+    // ══════════════════════════════════════
+    //  Signalement de contenu illicite (DSA)
+    // ══════════════════════════════════════
+
+    /// <summary>
+    /// L'accuse de reception. Ce n'est pas une politesse : le reglement
+    /// exige qu'il parte « sans retard », et qu'il confirme la reception
+    /// de facon verifiable par le declarant.
+    /// </summary>
+    public static Courriel AccuseSignalement(string destinataire, string reference,
+                                             string motif, DateTime quand)
+    {
+        const string titre = "Votre signalement a bien ete recu";
+        var corps = $"""
+            <p style="margin:0 0 12px">Nous avons enregistre votre signalement.</p>
+            <table role="presentation" cellpadding="0" cellspacing="0" border="0"
+                   style="width:100%;margin:0 0 14px;font-size:14px;color:#39545a">
+              <tr><td style="padding:3px 0;color:#577177">Reference</td>
+                  <td style="padding:3px 0;font-weight:600;color:#10272b">{E(reference)}</td></tr>
+              <tr><td style="padding:3px 0;color:#577177">Motif</td>
+                  <td style="padding:3px 0">{E(motif)}</td></tr>
+              <tr><td style="padding:3px 0;color:#577177">Depose le</td>
+                  <td style="padding:3px 0">{quand:dd/MM/yyyy} a {quand:HH:mm} (UTC)</td></tr>
+            </table>
+            <p style="margin:0 0 12px">Nous l'examinons. Vous recevrez la decision, motivee,
+               des qu'elle sera prise, ainsi que les voies de recours ouvertes si vous la contestez.</p>
+            <p style="margin:0">Conservez cette reference : elle permet de suivre le dossier.</p>
+            """;
+        var texte = $"""
+            Nous avons enregistre votre signalement.
+
+            Reference : {reference}
+            Motif : {motif}
+            Depose le : {quand:dd/MM/yyyy} a {quand:HH:mm} (UTC)
+
+            Nous l'examinons. Vous recevrez la decision, motivee, des qu'elle
+            sera prise, ainsi que les voies de recours ouvertes si vous la
+            contestez. Conservez cette reference : elle permet de suivre le
+            dossier.
+
+            {Marque}
+            """;
+        return new Courriel(destinataire, $"Signalement {reference} — bien recu",
+                            Envelopper(titre, corps), texte);
+    }
+
+    /// <summary>
+    /// La decision. Le reglement ne se satisfait pas d'un « rejete » : il
+    /// exige la motivation et l'indication des recours, y compris
+    /// extrajudiciaires. Les deux figurent ici.
+    /// </summary>
+    public static Courriel DecisionSignalement(string destinataire, string reference,
+                                               bool fonde, string motivation, string? mesure)
+    {
+        var titre = $"Decision sur votre signalement {reference}";
+        var verdict = fonde ? "Signalement fonde" : "Signalement non retenu";
+
+        var corps = $"""
+            <p style="margin:0 0 12px">Votre signalement <strong>{E(reference)}</strong> a ete examine.</p>
+            <p style="margin:0 0 6px;font-weight:600;color:#10272b">{E(verdict)}</p>
+            <p style="margin:0 0 14px">{E(motivation)}</p>
+            <p style="margin:0 0 18px;color:#577177">Mesure prise : {E(mesure ?? "aucune")}</p>
+            <p style="margin:0 0 8px;font-weight:600;color:#10272b">Voies de recours</p>
+            <p style="margin:0 0 10px">Si vous contestez cette decision, repondez a ce message en
+               citant la reference : le dossier sera reexamine par une autre personne.</p>
+            <p style="margin:0">Vous pouvez egalement saisir un organe de reglement extrajudiciaire
+               des litiges certifie au titre de l'article 21 du reglement (UE) 2022/2065, ou porter
+               l'affaire devant les tribunaux competents. Le coordinateur francais pour les services
+               numeriques est l'Arcom.</p>
+            """;
+        var texte = $"""
+            Votre signalement {reference} a ete examine.
+
+            {verdict}
+            {motivation}
+
+            Mesure prise : {mesure ?? "aucune"}
+
+            VOIES DE RECOURS
+            Si vous contestez cette decision, repondez a ce message en citant la
+            reference : le dossier sera reexamine par une autre personne. Vous
+            pouvez egalement saisir un organe de reglement extrajudiciaire des
+            litiges certifie au titre de l'article 21 du reglement (UE) 2022/2065,
+            ou porter l'affaire devant les tribunaux competents. Le coordinateur
+            francais pour les services numeriques est l'Arcom.
+
+            {Marque}
+            """;
+        return new Courriel(destinataire, titre, Envelopper(titre, corps), texte);
     }
 }

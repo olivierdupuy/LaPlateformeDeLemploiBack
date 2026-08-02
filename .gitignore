@@ -10,3 +10,8 @@ la-plateforme-de-l-emploi-*.json
 # authentification. Ils ne doivent pas non plus entrer au depot.
 **/donnees/
 **/sauvegardes/
+
+# Le journal roulant de Serilog. C'est une sortie d'execution, au meme
+# titre que « bin » : elle porte les erreurs reelles des visiteurs, avec
+# leurs numeros de reference, et n'a rien a faire au depot.
+journaux/

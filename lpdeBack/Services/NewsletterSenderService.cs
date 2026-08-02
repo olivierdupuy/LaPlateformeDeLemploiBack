@@ -68,6 +68,7 @@ public class NewsletterSenderService : BackgroundService
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
         var brevo = scope.ServiceProvider.GetRequiredService<BrevoService>();
         var lettre = scope.ServiceProvider.GetRequiredService<NewsletterService>();
+        var consentement = scope.ServiceProvider.GetRequiredService<ConsentementCourriel>();
 
         var campagne = await db.NewsletterCampaigns
             .Where(c => c.Status == "Sending")
@@ -109,6 +110,25 @@ public class NewsletterSenderService : BackgroundService
             {
                 livraison.Status = "Failed";
                 livraison.Error = "Desabonne avant l'envoi";
+                continue;
+            }
+
+            // ── Le centre de preferences, et les adresses mortes ──
+            //
+            // Deux registres se sont mis a coexister : le desabonnement
+            // historique ci-dessus, et les preferences par categorie.
+            // Deux registres qui se contredisent finissent toujours par
+            // ecrire a quelqu'un qui a dit non ; on interroge donc les
+            // deux, et le refus l'emporte quel qu'en soit le registre.
+            //
+            // Le meme appel ecarte les adresses qui ne repondent plus.
+            // Continuer a servir une boite fermee coute la reputation du
+            // domaine, et cette reputation abimee fait tomber en
+            // indesirable les mots de passe oublies.
+            if (!await consentement.Autorise(abonne.Email, "lettre"))
+            {
+                livraison.Status = "Failed";
+                livraison.Error = "Refuse dans les preferences, ou adresse bloquee";
                 continue;
             }
 

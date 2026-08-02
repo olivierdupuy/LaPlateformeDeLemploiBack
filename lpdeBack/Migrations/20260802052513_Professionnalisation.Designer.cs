@@ -3,6 +3,7 @@ using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using lpdeBack.Data;
 
@@ -11,9 +12,11 @@ using lpdeBack.Data;
 namespace lpdeBack.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260802052513_Professionnalisation")]
+    partial class Professionnalisation
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -799,57 +802,6 @@ namespace lpdeBack.Migrations
                     b.HasIndex("UserId", "SectionType");
 
                     b.ToTable("CvSections");
-                });
-
-            modelBuilder.Entity("lpdeBack.Models.Diffusion", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("int");
-
-                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
-
-                    b.Property<DateTime>("DemandeeLe")
-                        .HasColumnType("datetime2");
-
-                    b.Property<string>("DemandeeParUserId")
-                        .IsRequired()
-                        .HasColumnType("nvarchar(max)");
-
-                    b.Property<string>("Destination")
-                        .IsRequired()
-                        .HasColumnType("nvarchar(max)");
-
-                    b.Property<DateTime?>("DiffuseeLe")
-                        .HasColumnType("datetime2");
-
-                    b.Property<int>("JobOfferId")
-                        .HasColumnType("int");
-
-                    b.Property<string>("Motif")
-                        .HasColumnType("nvarchar(max)");
-
-                    b.Property<string>("ReferenceExterne")
-                        .HasColumnType("nvarchar(max)");
-
-                    b.Property<DateTime?>("RetireeLe")
-                        .HasColumnType("datetime2");
-
-                    b.Property<string>("Statut")
-                        .IsRequired()
-                        .HasColumnType("nvarchar(max)");
-
-                    b.Property<int>("Tentatives")
-                        .HasColumnType("int");
-
-                    b.Property<string>("UrlExterne")
-                        .HasColumnType("nvarchar(max)");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("JobOfferId");
-
-                    b.ToTable("Diffusions");
                 });
 
             modelBuilder.Entity("lpdeBack.Models.ErreurNavigateur", b =>
@@ -2366,17 +2318,6 @@ namespace lpdeBack.Migrations
                         .IsRequired();
 
                     b.Navigation("User");
-                });
-
-            modelBuilder.Entity("lpdeBack.Models.Diffusion", b =>
-                {
-                    b.HasOne("lpdeBack.Models.JobOffer", "JobOffer")
-                        .WithMany()
-                        .HasForeignKey("JobOfferId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.Navigation("JobOffer");
                 });
 
             modelBuilder.Entity("lpdeBack.Models.Interview", b =>

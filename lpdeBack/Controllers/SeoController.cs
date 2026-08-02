@@ -1,9 +1,10 @@
-using Microsoft.AspNetCore.Authorization;
+﻿using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using System.Text;
 using System.Xml;
 using lpdeBack.Data;
+using lpdeBack.Services;
 
 namespace lpdeBack.Controllers;
 
@@ -97,6 +98,10 @@ public class SeoController : ControllerBase
         for (var p = 1; p <= pagesOffres; p++) Ajouter($"sitemaps/offres-{p}.xml", maj);
         for (var p = 1; p <= pagesEntreprises; p++) Ajouter($"sitemaps/entreprises-{p}.xml", maj);
         Ajouter("sitemaps/metiers.xml", maj);
+        // Les pages d'atterrissage « metier x ville » : c'est ce qui
+        // capte la longue traine, et elles ne se decouvrent par aucun
+        // lien depuis l'accueil.
+        Ajouter("sitemaps/emplois.xml", maj);
 
         sb.AppendLine("</sitemapindex>");
         return Xml(sb.ToString());
@@ -258,6 +263,81 @@ public class SeoController : ControllerBase
     private static string Echapper(string valeur) => new XmlDocument()
         .CreateTextNode(valeur).OuterXml;
 
+    /// <summary>
+    /// Le plan sort avec son etiquette d'entite.
+    ///
+    /// Cent mille URL representent plusieurs mega-octets, relus par
+    /// chaque moteur plusieurs fois par jour. Sans etiquette, tout
+    /// repart a chaque passage alors que le catalogue n'a bouge qu'aux
+    /// heures d'import. Le moteur renvoie ce qu'il connait, on compare,
+    /// et on repond 304 sans corps.
+    /// </summary>
+    // ═══════════════════════════════════════════
+    //  Pages d'atterrissage metier x ville
+    // ═══════════════════════════════════════════
+
+    /// <summary>
+    /// Les combinaisons qui portent assez d'offres pour meriter une
+    /// page.
+    ///
+    /// Le seuil est celui du controleur qui les sert : declarer ici une
+    /// adresse qui rend 404 la-bas serait le meilleur moyen de faire
+    /// baisser la confiance du moteur dans tout le plan.
+    /// </summary>
+    [HttpGet("sitemaps/emplois.xml")]
+    [ResponseCache(Duration = 86400, Location = ResponseCacheLocation.Any)]
+    public async Task<IActionResult> Atterrissages()
+    {
+        var brut = await Indexables()
+            .Where(j => j.Category != null && j.Category != "" && j.Location != null && j.Location != "")
+            .GroupBy(j => new { j.Category, j.Location })
+            .Select(g => new { g.Key.Category, g.Key.Location, Nombre = g.Count() })
+            .ToListAsync();
+
+        var pages = brut
+            .GroupBy(x => new
+            {
+                M = Slugs.Fabriquer(x.Category),
+                V = Slugs.Fabriquer(x.Location),
+            })
+            .Where(g => g.Key.M != "" && g.Key.V != "")
+            .Select(g => new { g.Key.M, g.Key.V, Nombre = g.Sum(x => x.Nombre) })
+            .Where(x => x.Nombre >= Controllers.AtterrissageController.OffresMinimum)
+            .OrderByDescending(x => x.Nombre)
+            .Take(ParFichier)
+            .ToList();
+
+        // Le metier seul est une page aussi, et la plus forte des deux :
+        // elle agrege toutes les villes.
+        var metiers = pages
+            .GroupBy(x => x.M)
+            .Select(g => new { M = g.Key, Nombre = g.Sum(x => x.Nombre) })
+            .ToList();
+
+        var sb = Entete();
+
+        foreach (var m in metiers.OrderByDescending(x => x.Nombre))
+        {
+            sb.AppendLine("  <url>");
+            sb.AppendLine($"    <loc>{Echapper($"{Site}/emploi/{m.M}")}</loc>");
+            sb.AppendLine("    <changefreq>daily</changefreq>");
+            sb.AppendLine("    <priority>0.8</priority>");
+            sb.AppendLine("  </url>");
+        }
+
+        foreach (var p in pages)
+        {
+            sb.AppendLine("  <url>");
+            sb.AppendLine($"    <loc>{Echapper($"{Site}/emploi/{p.M}/{p.V}")}</loc>");
+            sb.AppendLine("    <changefreq>daily</changefreq>");
+            sb.AppendLine("    <priority>0.7</priority>");
+            sb.AppendLine("  </url>");
+        }
+
+        sb.AppendLine("</urlset>");
+        return Xml(sb.ToString());
+    }
+
     private IActionResult Xml(string contenu) =>
-        Content(contenu, "application/xml", Encoding.UTF8);
+        this.AvecEtiquette(contenu, "application/xml; charset=utf-8");
 }

@@ -24,13 +24,18 @@ public class JobOffersController : ControllerBase
     private readonly PerimetreRecruteur _perimetre;
     private readonly UserManager<AppUser> _userManager;
     private readonly IMemoryCache _cache;
+    private readonly lpdeBack.Services.FacturationService _facturation;
+    private readonly lpdeBack.Services.QualiteCatalogue _qualite;
 
-    public JobOffersController(AppDbContext context, UserManager<AppUser> userManager, IMemoryCache cache, PerimetreRecruteur perimetre)
+    public JobOffersController(AppDbContext context, UserManager<AppUser> userManager, IMemoryCache cache, PerimetreRecruteur perimetre,
+                               lpdeBack.Services.FacturationService facturation, lpdeBack.Services.QualiteCatalogue qualite)
     {
         _perimetre = perimetre;
         _context = context;
         _userManager = userManager;
         _cache = cache;
+        _facturation = facturation;
+        _qualite = qualite;
     }
 
     private string? GetUserId() => User.FindFirstValue(ClaimTypes.NameIdentifier);
@@ -1212,6 +1217,27 @@ public class JobOffersController : ControllerBase
     [AdresseConfirmee]
     public async Task<ActionResult<JobOffer>> Create(JobOfferCreateDto dto)
     {
+        // ── Quota de la formule ──
+        //
+        // Le brouillon en est exempte : il n'est visible de personne, et
+        // facturer un brouillon reviendrait a faire payer l'hesitation.
+        // L'administration l'est aussi — elle depose pour autrui.
+        //
+        // Le meme controle existe sur l'API publique : sans lui, elle
+        // serait la porte de service qui contourne la facturation.
+        if (!dto.IsDraft && !IsAdmin())
+        {
+            var auteur = GetUserId();
+            if (auteur is not null)
+            {
+                var (autorise, motif, _, _) = await _facturation.PeutPublier(auteur);
+                // 402 « paiement requis » : ce n'est ni une erreur de
+                // saisie ni un droit manquant, et le client sait alors
+                // qu'il faut proposer la page de facturation.
+                if (!autorise) return StatusCode(402, new { message = motif });
+            }
+        }
+
         // Check if moderation is required
         var requireModeration = await _context.PlatformSettings
             .Where(s => s.Key == "require_moderation")
@@ -1280,6 +1306,21 @@ public class JobOffersController : ControllerBase
         // Geocodage du lieu pour la recherche par rayon
         var geo = lpdeBack.Services.GeoUtils.Geocode(job.Location);
         if (geo != null) { job.Latitude = geo.Value.Lat; job.Longitude = geo.Value.Lng; }
+
+        // L'empreinte de contenu : elle sert au dedoublonnage
+        // inter-sources, et une offre deposee ici doit y participer —
+        // sans quoi un import ramenerait la meme annonce a cote.
+        job.Empreinte = lpdeBack.Services.QualiteCatalogue.Empreinte(job.Title, job.Company, job.Location);
+
+        // La meme analyse que pour les offres importees. Une annonce
+        // deposee sur le site n'est pas plus fiable qu'une autre — les
+        // arnaques a l'emploi passent precisement par la ou l'on
+        // controle le moins. Elle ne bloque rien : au-dela du seuil,
+        // l'offre entre en file de moderation.
+        if (!isAdmin && !dto.IsDraft && _qualite.Filtrer(job))
+            needsReview = true;
+
+        if (needsReview) job.ModerationStatus = "Pending";
 
         _context.JobOffers.Add(job);
         await _context.SaveChangesAsync();

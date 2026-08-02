@@ -1526,6 +1526,25 @@ public class AdminController : ControllerBase
         });
 
     /// <summary>
+    /// Ce vers quoi la plateforme sait pousser une offre.
+    ///
+    /// Repond la meme chose que les autres etats : ce qui marche, ce qui
+    /// ne marche pas, et ce qu'il manque pour que cela marche. Un
+    /// « non configure » sans le detail oblige a lire le code.
+    /// </summary>
+    [HttpGet("diffusion/etat")]
+    public ActionResult<object> EtatDiffusion([FromServices] Multidiffusion diffusion)
+        => Ok(new
+        {
+            configure = diffusion.EstConfigure,
+            etat = diffusion.Etat,
+            destinations = diffusion.Destinations(),
+            consequence = diffusion.EstConfigure
+                ? "Les recruteurs peuvent pousser une offre chez les partenaires ouverts, et l'en retirer."
+                : "Le bouton « Diffuser » est proposé mais chaque destination refuse en indiquant ce qui lui manque. Aucune offre ne part.",
+        });
+
+    /// <summary>
     /// Ce que la plateforme sait de son compte SMS. Aucun secret n'en sort :
     /// le point d'entree et le nom du compte suffisent a diagnostiquer.
     /// </summary>
@@ -1540,7 +1559,55 @@ public class AdminController : ControllerBase
                 : "Le second facteur par SMS n'est pas proposé : seule l'application d'authentification l'est. Les identifiants OVH manquent.",
         });
 
-    /// <summary>Envoie un message de controle a l'adresse demandee.</summary>
+    /// <summary>
+    /// La liste des modeles transactionnels.
+    ///
+    /// Quatorze messages partent au nom de la plateforme. Aucun d'eux
+    /// n'etait relisible sans provoquer la situation qui le declenche —
+    /// relire le courriel de suppression de compte supposait d'en
+    /// supprimer un.
+    /// </summary>
+    [HttpGet("email/modeles")]
+    public ActionResult<object> ModelesDeCourriel()
+        => Ok(CatalogueCourriels.Tous.Select(m => new
+        {
+            cle = m.Cle,
+            nom = m.Nom,
+            quand = m.Quand,
+            categorie = m.Categorie,
+        }));
+
+    /// <summary>
+    /// Rend un modele avec des donnees d'exemple. N'envoie rien.
+    ///
+    /// Le corps HTML sort tel qu'il partirait. Il est affiche cote
+    /// client dans un cadre isole (<c>iframe</c> en bac a sable) et non
+    /// injecte dans la page : ce sont nos propres gabarits, mais s'en
+    /// remettre a cela pour justifier un <c>innerHTML</c> serait prendre
+    /// l'habitude qui, un jour, s'appliquera a un gabarit qui ne l'est
+    /// plus.
+    /// </summary>
+    [HttpGet("email/modeles/{cle}/apercu")]
+    public ActionResult<object> ApercuModele(string cle)
+    {
+        var destinataire = User.FindFirstValue(ClaimTypes.Email) ?? "vous@exemple.fr";
+        var rendu = CatalogueCourriels.Rendre(cle, destinataire);
+
+        if (rendu is null)
+            return NotFound(new { message = $"Aucun modèle nommé « {cle} »." });
+
+        return Ok(new
+        {
+            cle,
+            sujet = rendu.Sujet,
+            html = rendu.CorpsHtml,
+            texte = rendu.CorpsTexte,
+        });
+    }
+
+    /// <summary>
+    /// Expedie un modele — celui demande, ou le message de controle.
+    /// </summary>
     [HttpPost("email/essai")]
     public async Task<ActionResult<object>> EssaiCourriel([FromServices] IEmailSender mail, [FromBody] EssaiCourrielDto dto)
     {
@@ -1548,14 +1615,21 @@ public class AdminController : ControllerBase
         if (string.IsNullOrWhiteSpace(destinataire))
             return BadRequest(new { message = "Aucune adresse de destination." });
 
-        var parti = await mail.Envoyer(ModelesCourriel.Essai(destinataire));
+        var cle = string.IsNullOrWhiteSpace(dto.Modele) ? "essai" : dto.Modele!;
+        var message = CatalogueCourriels.Rendre(cle, destinataire);
+        if (message is null)
+            return BadRequest(new { message = $"Aucun modèle nommé « {cle} »." });
+
+        var parti = await mail.Envoyer(message);
 
         // Un essai part vers une adresse choisie librement. C'est peu de
         // chose, et c'est justement pourquoi il doit laisser une trace :
         // le seul moyen de savoir que le serveur d'envoi a servi a autre
-        // chose qu'a un controle.
+        // chose qu'a un controle. Le modele expedie en fait partie —
+        // « on a envoye un courriel » et « on a envoye la decision d'un
+        // signalement » ne se valent pas dans un journal.
         await _log.Log("TestEmail", "Email", null,
-            $"Message de contrôle {(parti ? "expédié" : "refusé")} vers {destinataire}",
+            $"Modèle « {cle} » {(parti ? "expédié" : "refusé")} vers {destinataire}",
             UserId(), UserFullName(), Ip());
 
         return Ok(new
@@ -1815,4 +1889,15 @@ public class EssaiCourrielDto
     /// <summary>Vide, le message part a l'adresse de l'administrateur connecte.</summary>
     [AdresseCourriel]
     public string? Email { get; set; }
+
+    /// <summary>
+    /// Le modele a expedier. Vide, c'est le message de controle.
+    ///
+    /// Un essai qui n'envoie qu'un message generique ne prouve qu'une
+    /// chose : que le serveur repond. Il ne dit rien de ce que devient
+    /// le vrai gabarit dans un client de messagerie, qui est pourtant
+    /// la seule question qu'on se pose en ouvrant cet ecran.
+    /// </summary>
+    [Longueur(Limites.Nom)]
+    public string? Modele { get; set; }
 }

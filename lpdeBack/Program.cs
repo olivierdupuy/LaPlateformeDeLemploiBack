@@ -11,10 +11,54 @@ using System.Security.Claims;
 using System.Text;
 using FirebaseAdmin;
 using Google.Apis.Auth.OAuth2;
+using Serilog;
 using lpdeBack.Data;
 using lpdeBack.Models;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// ══════════════════════════════════════════════
+//  Journalisation
+//
+//  Le journal par defaut ecrit sur la console, que personne ne regarde
+//  sur un serveur IIS, et dans le journal des evenements Windows, ou
+//  rien n'est cherchable. Une exception rattrapee par le filet portait
+//  bien une reference — « 4F2A9C31 » — mais retrouver la ligne
+//  correspondante supposait d'ouvrir une session sur la machine.
+//
+//  Serilog ecrit un fichier par jour, garde trente jours, et sort en
+//  texte structure : la reference, la route et la duree sont des
+//  proprietes, pas des morceaux de phrase. Trente jours parce que
+//  c'est la duree pendant laquelle on enquete encore sur un incident,
+//  et parce qu'au-dela ces fichiers contiennent des adresses IP dont
+//  la conservation n'est plus justifiee.
+//
+//  Le repertoire vit hors du site publie : « msdeploy sync » efface ce
+//  qu'il ne connait pas, et un journal efface a chaque deploiement
+//  n'aurait jamais la trace de ce que le deploiement a casse.
+// ══════════════════════════════════════════════
+var repertoireJournal = builder.Configuration["Diagnostics:RepertoireJournal"]
+    ?? Path.Combine(builder.Environment.ContentRootPath, "..", "journaux");
+
+builder.Host.UseSerilog((contexte, services, config) => config
+    .ReadFrom.Configuration(contexte.Configuration)
+    .Enrich.FromLogContext()
+    // Le bruit d'EF et du routage noierait tout le reste. Les requetes
+    // lentes remontent par ailleurs, via leur propre intercepteur.
+    .MinimumLevel.Override("Microsoft.AspNetCore", Serilog.Events.LogEventLevel.Warning)
+    .MinimumLevel.Override("Microsoft.EntityFrameworkCore", Serilog.Events.LogEventLevel.Warning)
+    .WriteTo.Console()
+    .WriteTo.File(
+        Path.Combine(repertoireJournal, "lpde-.log"),
+        rollingInterval: Serilog.RollingInterval.Day,
+        retainedFileCountLimit: 30,
+        // Un incident peut produire beaucoup en peu de temps ; sans
+        // plafond par fichier, le disque se remplit et le site s'arrete
+        // pour de bon.
+        fileSizeLimitBytes: 64 * 1024 * 1024,
+        rollOnFileSizeLimit: true,
+        outputTemplate:
+            "{Timestamp:yyyy-MM-dd HH:mm:ss.fff zzz} [{Level:u3}] {Message:lj} {Properties:j}{NewLine}{Exception}"));
 
 // Firebase Admin SDK
 var firebaseCredPath = Path.Combine(builder.Environment.ContentRootPath, "firebase-service-account.json");
@@ -134,6 +178,21 @@ builder.Services.AddRateLimiter(options =>
                 Window = TimeSpan.FromMinutes(1),
             }));
 
+    // ── API publique ──
+    // Un partenaire equipe appelle plus vite qu'une personne, et c'est
+    // normal : il synchronise. Le plafond compte par cle et non par
+    // adresse — deux clients derriere le meme reseau d'entreprise ne
+    // doivent pas se penaliser l'un l'autre — et il est cale sur une
+    // synchronisation raisonnable, pas sur un moissonnage.
+    options.AddPolicy("catalogue-api", http =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            http.Request.Headers.Authorization.FirstOrDefault() ?? lpdeBack.Validation.AntiRobot.Client(http),
+            _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 600,
+                Window = TimeSpan.FromMinutes(1),
+            }));
+
     // L'abonnement a la lettre. Le double opt-in protege deja l'abonne —
     // rien ne part tant qu'il n'a pas confirme — mais rien n'empechait de
     // s'en servir pour noyer une victime sous des demandes de
@@ -184,8 +243,17 @@ builder.Services.Configure<MvcOptions>(o =>
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
-builder.Services.AddDbContext<AppDbContext>(options =>
-    options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection")));
+// L'intercepteur des requetes lentes : en singleton, il ne porte qu'un
+// seuil et un journal, et le contexte est cree a chaque requete.
+builder.Services.AddSingleton<lpdeBack.Services.RequetesLentes>();
+
+builder.Services.AddDbContext<AppDbContext>((provider, options) =>
+    options
+        .UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection"))
+        // Ce qui depasse le seuil part au journal, avec sa duree. Sans
+        // cela, une requete qui balaie cent mille offres faute d'index
+        // ne se distingue en rien d'une page lente a cause du reseau.
+        .AddInterceptors(provider.GetRequiredService<lpdeBack.Services.RequetesLentes>()));
 
 builder.Services.AddIdentity<AppUser, IdentityRole>(options =>
 {
@@ -363,6 +431,83 @@ builder.Services.AddAuthorization();
 builder.Services.AddMemoryCache();
 builder.Services.AddHttpClient();
 builder.Services.AddSignalR();
+
+// ══════════════════════════════════════════════
+//  Compression des reponses
+//
+//  Une page de resultats est un tableau JSON d'une centaine d'offres,
+//  chacune avec sa description : deux a trois cents kilo-octets, envoyes
+//  tels quels a chaque recherche. Le meme corps compresse en Brotli
+//  tient dans une vingtaine — le JSON est repetitif par nature, les
+//  memes noms de proprietes revenant a chaque element.
+//
+//  Sur une liaison mobile, c'est la difference entre une seconde et
+//  huit. Le cout serveur est negligeable devant le temps de la requete
+//  SQL qui l'a produit.
+//
+//  HTTPS uniquement — active par defaut, et on le laisse ainsi : la
+//  compression sur un canal chiffre a ete la source d'attaques
+//  (BREACH), et rien ici ne justifie de prendre ce risque puisque tout
+//  passe en HTTPS de toute facon.
+// ══════════════════════════════════════════════
+builder.Services.AddResponseCompression(options =>
+{
+    options.Providers.Add<Microsoft.AspNetCore.ResponseCompression.BrotliCompressionProvider>();
+    options.Providers.Add<Microsoft.AspNetCore.ResponseCompression.GzipCompressionProvider>();
+    options.MimeTypes = Microsoft.AspNetCore.ResponseCompression.ResponseCompressionDefaults
+        .MimeTypes.Concat(new[] { "application/json", "application/xml", "text/xml" });
+});
+builder.Services.Configure<Microsoft.AspNetCore.ResponseCompression.BrotliCompressionProviderOptions>(
+    o => o.Level = System.IO.Compression.CompressionLevel.Fastest);
+builder.Services.Configure<Microsoft.AspNetCore.ResponseCompression.GzipCompressionProviderOptions>(
+    o => o.Level = System.IO.Compression.CompressionLevel.Fastest);
+
+// ══════════════════════════════════════════════
+//  Cache de sortie
+//
+//  Les listes publiques repartaient en base a chaque requete, alors
+//  qu'elles sont identiques pour tout le monde et qu'elles changent au
+//  rythme des imports — quelques fois par jour. Aux heures de pointe,
+//  la meme page de resultats etait recalculee des centaines de fois par
+//  minute.
+//
+//  Trois durees, calees sur ce que chaque chose vaut :
+//
+//    « catalogue » (60 s) : les listes d'offres. Court, parce qu'une
+//    offre publiee par un recruteur doit apparaitre tout de suite —
+//    une minute d'attente est acceptable, dix ne le seraient pas.
+//
+//    « reference » (10 min) : salaires, facettes de parcours, annuaire
+//    d'entreprises. Ces agregats bougent a l'echelle de la journee.
+//
+//    « plan-de-site » (1 h) : le plan est lourd a produire (cent mille
+//    URL) et n'est lu que par des robots, qui ne s'offusquent pas d'une
+//    heure de retard.
+//
+//  Le cache ne s'applique qu'aux requetes anonymes : la politique par
+//  defaut d'ASP.NET ignore deja tout ce qui porte un en-tete
+//  d'autorisation ou un cookie, ce qui evite le pire des accidents —
+//  servir la page d'un membre a un autre.
+// ══════════════════════════════════════════════
+builder.Services.AddOutputCache(options =>
+{
+    options.AddPolicy("catalogue", p => p
+        .Expire(TimeSpan.FromSeconds(60))
+        .SetVaryByQuery("*"));
+
+    options.AddPolicy("reference", p => p
+        .Expire(TimeSpan.FromMinutes(10))
+        .SetVaryByQuery("*"));
+
+    options.AddPolicy("plan-de-site", p => p
+        .Expire(TimeSpan.FromHours(1))
+        .SetVaryByQuery("*"));
+
+    // Sans plafond, un catalogue de cent mille offres finirait par tenir
+    // en memoire deux fois : celle de la base et celle du cache.
+    options.MaximumBodySize = 8 * 1024 * 1024;
+    options.SizeLimit = 128 * 1024 * 1024;
+});
 builder.Services.AddScoped<lpdeBack.Services.PushNotificationService>();
 builder.Services.AddScoped<lpdeBack.Services.ActivityLogService>();
 builder.Services.AddScoped<lpdeBack.Services.SessionService>();
@@ -380,6 +525,26 @@ builder.Services.AddScoped<lpdeBack.Services.DeuxFacteursSms>();
 // oublies cesseraient d'arriver avec le reste.
 builder.Services.AddSingleton<lpdeBack.Services.BrevoService>();
 builder.Services.AddScoped<lpdeBack.Services.NewsletterService>();
+// Ce qu'on a le droit d'envoyer, et a qui : preferences par categorie
+// et adresses qui ne repondent plus.
+builder.Services.AddScoped<lpdeBack.Services.ConsentementCourriel>();
+// Formules, quotas, mises en avant, factures.
+builder.Services.AddScoped<lpdeBack.Services.FacturationService>();
+// L'encaissement, derriere une interface : changer de prestataire ne
+// doit toucher ni les factures, ni les quotas, ni les controleurs.
+builder.Services.AddScoped<lpdeBack.Services.PrestatairePaiement>();
+// Dedoublonnage inter-sources, expiration et analyse de fraude des
+// offres importees.
+builder.Services.AddScoped<lpdeBack.Services.QualiteCatalogue>();
+// Notification des systemes tiers abonnes a nos evenements.
+builder.Services.AddScoped<lpdeBack.Services.WebhookService>();
+// Depot d'une offre chez les partenaires, et surtout son retrait :
+// une offre pourvue qui reste en ligne ailleurs continue de recevoir
+// des candidatures que personne ne lira.
+builder.Services.AddScoped<lpdeBack.Services.Multidiffusion>();
+// Signale les offres nouvelles aux moteurs qui l'acceptent, sans
+// attendre qu'ils relisent le plan de site.
+builder.Services.AddScoped<lpdeBack.Services.IndexNow>();
 // Qui peut gerer quoi, cote recruteur. En portee de requete : il
 // memoise l'equipe le temps d'un appel, pas au-dela.
 builder.Services.AddScoped<lpdeBack.Services.PerimetreRecruteur>();
@@ -468,7 +633,45 @@ else
     // En production, le filet : reponse propre au visiteur, trace
     // complete au journal, et une reference qui relie les deux.
     app.UseExceptionHandler();
+
+    // ── HTTPS, et rien d'autre ──
+    //
+    // L'API repondait en clair a qui l'appelait en clair. Un jeton porte
+    // par un en-tete Authorization traversait alors le reseau lisible,
+    // et le proxy d'un hotel ou d'un aeroport n'a pas besoin de plus.
+    //
+    // La redirection seule ne suffit pas : elle protege la deuxieme
+    // requete, jamais la premiere. HSTS regle cela en disant au
+    // navigateur de ne plus jamais essayer en clair — un an, sous-
+    // domaines compris.
+    //
+    // Consequence a connaitre avant de la garder : tant que l'en-tete
+    // n'a pas expire, le domaine est inaccessible en HTTP, y compris si
+    // le certificat vient a manquer. C'est le prix, et il est assume.
+    app.UseHsts();
+    app.UseHttpsRedirection();
 }
+
+// Avant tout ce qui produit un corps, sinon il n'y a plus rien a
+// compresser au moment ou l'on s'en occupe.
+app.UseResponseCompression();
+
+// Une ligne par requete, avec sa duree et son code : c'est ce qui
+// permet de dire « la lenteur vient de /joboffers, pas du reseau ».
+// Serilog n'en fait qu'une, la ou le journal par defaut en produit
+// trois pour la meme requete.
+app.UseSerilogRequestLogging(options =>
+{
+    // Les sondes de surveillance frappent /api/sante toutes les
+    // minutes : au niveau Information, elles representeraient a elles
+    // seules la moitie du journal.
+    options.GetLevel = (contexte, duree, ex) =>
+        ex is not null || contexte.Response.StatusCode >= 500
+            ? Serilog.Events.LogEventLevel.Error
+            : contexte.Request.Path.StartsWithSegments("/api/sante")
+                ? Serilog.Events.LogEventLevel.Verbose
+                : Serilog.Events.LogEventLevel.Information;
+});
 
 // Les fichiers deposes ont quitte wwwroot ; ce rapatriement s'assure
 // qu'aucun n'y reste, y compris ceux televerses avant le correctif.
@@ -508,6 +711,11 @@ app.UseMiddleware<lpdeBack.Middleware.MaintenanceMiddleware>();
 // avant qu'on ne depense a verifier chacune de leurs signatures.
 app.UseRateLimiter();
 
+// Apres CORS (la reponse mise en cache doit porter ses en-tetes
+// d'origine) et avant l'authentification : une lecture publique deja
+// calculee n'a pas besoin qu'on verifie une signature pour etre rendue.
+app.UseOutputCache();
+
 app.UseAuthentication();
 app.UseAuthorization();
 app.MapHub<lpdeBack.Hubs.ChatHub>("/hubs/chat");
@@ -516,6 +724,14 @@ app.MapControllers();
 // ═══════════════════════════════════
 //  SEED: Database + Roles + Users + Offers + Applications
 // ═══════════════════════════════════
+//
+// Saute sous l'environnement « Test ». Les tests d'integration montent
+// le vrai pipeline — authentification, autorisation par role, filtres —
+// sur une base SQLite qu'ils creent et peuplent eux-memes. Ce bloc-ci
+// applique des migrations SQL Server et du SQL brut ; le laisser
+// tourner ferait echouer le demarrage avant le premier test, et pour
+// une raison qui n'aurait rien a voir avec ce qu'on veut eprouver.
+if (!app.Environment.IsEnvironment("Test"))
 using (var scope = app.Services.CreateScope())
 {
     var services = scope.ServiceProvider;
@@ -752,3 +968,10 @@ using (var scope = app.Services.CreateScope())
 }
 
 app.Run();
+
+/// <summary>
+/// Rend la classe implicite des instructions de haut niveau visible au
+/// projet de tests : <c>WebApplicationFactory&lt;Program&gt;</c> a besoin
+/// d'un type pour savoir quelle application monter.
+/// </summary>
+public partial class Program { }

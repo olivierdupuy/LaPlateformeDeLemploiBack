@@ -21,6 +21,7 @@ public class JobImportService
     private readonly IConfiguration _config;
     private readonly ILogger<JobImportService> _logger;
     private readonly IMemoryCache _cache;
+    private readonly QualiteCatalogue _qualite;
 
     /// <summary>
     /// Un seul import a la fois, tous points d'entree confondus. Le service est
@@ -40,13 +41,14 @@ public class JobImportService
     public record ImportOutcome(bool started, int added);
 
     public JobImportService(AppDbContext context, IHttpClientFactory httpFactory, IConfiguration config,
-        ILogger<JobImportService> logger, IMemoryCache cache)
+        ILogger<JobImportService> logger, IMemoryCache cache, QualiteCatalogue qualite)
     {
         _context = context;
         _httpFactory = httpFactory;
         _config = config;
         _logger = logger;
         _cache = cache;
+        _qualite = qualite;
     }
 
     /// <summary>
@@ -322,6 +324,75 @@ public class JobImportService
         // ne demande que de retablir la ligne correspondante.
         var toAdd = new List<JobOffer>();
         try { toAdd.AddRange(await FetchFranceTravailAsync(seen, ct)); } catch (Exception e) { _logger.LogWarning(e, "Import France Travail échoué"); }
+
+        // ── Ce qui existe deja sous un autre identifiant ──
+        //
+        // « ExternalId » dedoublonne au sein d'une source ; il ne voit
+        // rien entre elles. La meme annonce arrive de France Travail,
+        // d'Adzuna et de Jooble avec trois identifiants differents, et
+        // le candidat voit trois fois le meme poste — puis postule deux
+        // fois par erreur.
+        //
+        // L'empreinte porte sur ce qui identifie un poste : intitule
+        // normalise, entreprise, ville. On la calcule pour chaque offre
+        // entrante, on ecarte celles qui existent deja, et surtout on
+        // rafraichit la date de derniere vue de l'ancienne : c'est elle
+        // qui la maintient en vie face a l'expiration.
+        var deja = await _context.JobOffers
+            .Where(j => j.IsActive && j.Empreinte != null)
+            .Select(j => new { j.Id, j.Empreinte })
+            .ToListAsync(ct);
+
+        var parEmpreinte = deja
+            .GroupBy(x => x.Empreinte!)
+            .ToDictionary(g => g.Key, g => g.Min(x => x.Id));
+
+        var retenues = new List<JobOffer>(toAdd.Count);
+        var revues = new List<int>();
+        var dansCeLot = new HashSet<string>();
+        var suspectes = 0;
+
+        foreach (var offre in toAdd)
+        {
+            var empreinte = QualiteCatalogue.Empreinte(offre.Title, offre.Company, offre.Location);
+            offre.Empreinte = empreinte;
+            offre.VueChezLaSourceLe = DateTime.UtcNow;
+
+            if (parEmpreinte.TryGetValue(empreinte, out var ancienneId))
+            {
+                revues.Add(ancienneId);
+                continue;
+            }
+
+            // Le meme lot peut contenir deux fois la meme annonce : deux
+            // pages de resultats qui se chevauchent chez la source.
+            if (!dansCeLot.Add(empreinte)) continue;
+
+            if (_qualite.Filtrer(offre)) suspectes++;
+            retenues.Add(offre);
+        }
+
+        if (revues.Count > 0)
+        {
+            // Par lots : une clause IN de dix mille identifiants fait
+            // echouer SQL Server, qui plafonne les parametres.
+            foreach (var lot in revues.Distinct().Chunk(1_000))
+            {
+                await _context.JobOffers
+                    .Where(j => lot.Contains(j.Id))
+                    .ExecuteUpdateAsync(m => m.SetProperty(j => j.VueChezLaSourceLe, DateTime.UtcNow), ct);
+            }
+        }
+
+        if (toAdd.Count != retenues.Count)
+            _logger.LogInformation(
+                "Dedoublonnage : {Ecartees} offres deja presentes sous un autre identifiant, {Revues} rafraichies.",
+                toAdd.Count - retenues.Count, revues.Distinct().Count());
+
+        if (suspectes > 0)
+            _logger.LogWarning("{Nombre} offres importees mises en file de moderation par l'analyse.", suspectes);
+
+        toAdd = retenues;
 
         if (toAdd.Count == 0) return 0;
 

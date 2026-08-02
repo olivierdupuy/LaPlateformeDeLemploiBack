@@ -34,6 +34,25 @@ public class AppDbContext : IdentityDbContext<AppUser>
     public DbSet<NewsletterCampaign> NewsletterCampaigns => Set<NewsletterCampaign>();
     public DbSet<NewsletterDelivery> NewsletterDeliveries => Set<NewsletterDelivery>();
 
+    // ── Exploitation ──
+    public DbSet<ErreurNavigateur> ErreursNavigateur => Set<ErreurNavigateur>();
+
+    // ── Conformite ──
+    public DbSet<SignalementDsa> SignalementsDsa => Set<SignalementDsa>();
+    public DbSet<PreferencesCourriel> PreferencesCourriel => Set<PreferencesCourriel>();
+    public DbSet<RetourCourriel> RetoursCourriel => Set<RetourCourriel>();
+
+    // ── Facturation ──
+    public DbSet<Abonnement> Abonnements => Set<Abonnement>();
+    public DbSet<MiseEnAvant> MisesEnAvant => Set<MiseEnAvant>();
+    public DbSet<Facture> Factures => Set<Facture>();
+
+    // ── Integrations ──
+    public DbSet<JetonApi> JetonsApi => Set<JetonApi>();
+    public DbSet<Webhook> Webhooks => Set<Webhook>();
+    public DbSet<LivraisonWebhook> LivraisonsWebhook => Set<LivraisonWebhook>();
+    public DbSet<Diffusion> Diffusions => Set<Diffusion>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
@@ -56,8 +75,66 @@ public class AppDbContext : IdentityDbContext<AppUser>
             // Couvre le filtrage liste + regroupement par entreprise sur gros volume.
             entity.HasIndex(e => new { e.IsActive, e.ModerationStatus, e.Company });
             entity.HasIndex(e => e.ExternalId);
+            // Le dedoublonnage inter-sources interroge cette colonne pour
+            // chaque offre importee : sans index, un import de dix mille
+            // offres ferait dix mille balayages de table.
+            entity.HasIndex(e => e.Empreinte);
+            // L'expiration des offres importees balaie par source et par
+            // date de derniere vue.
+            entity.HasIndex(e => new { e.ExternalSource, e.VueChezLaSourceLe });
             entity.HasOne(j => j.CreatedByUser).WithMany().HasForeignKey(j => j.CreatedByUserId).OnDelete(DeleteBehavior.SetNull);
         });
+
+        // ── Exploitation, conformite, facturation, integrations ──
+        // Les index posent les acces reels : regrouper les erreurs par
+        // empreinte, retrouver des preferences par adresse ou par jeton,
+        // authentifier un appel d'API par l'empreinte de sa cle.
+        modelBuilder.Entity<ErreurNavigateur>(e =>
+        {
+            e.HasIndex(x => x.Empreinte).IsUnique();
+            e.HasIndex(x => x.DerniereVue);
+        });
+
+        modelBuilder.Entity<SignalementDsa>(e =>
+        {
+            e.HasIndex(x => x.Reference).IsUnique();
+            e.HasIndex(x => x.Statut);
+        });
+
+        modelBuilder.Entity<PreferencesCourriel>(e =>
+        {
+            e.HasIndex(x => x.Email).IsUnique();
+            e.HasIndex(x => x.Jeton).IsUnique();
+        });
+
+        modelBuilder.Entity<RetourCourriel>(e => e.HasIndex(x => x.Email).IsUnique());
+
+        modelBuilder.Entity<Abonnement>(e =>
+        {
+            e.HasIndex(x => x.UserId);
+            e.HasIndex(x => x.Statut);
+        });
+
+        modelBuilder.Entity<MiseEnAvant>(e =>
+        {
+            e.HasIndex(x => x.JobOfferId);
+            e.HasIndex(x => x.FinLe);
+        });
+
+        modelBuilder.Entity<Facture>(e =>
+        {
+            e.HasIndex(x => x.Numero).IsUnique();
+            e.HasIndex(x => x.UserId);
+        });
+
+        modelBuilder.Entity<JetonApi>(e =>
+        {
+            e.HasIndex(x => x.Empreinte).IsUnique();
+            e.HasIndex(x => x.UserId);
+        });
+
+        modelBuilder.Entity<Webhook>(e => e.HasIndex(x => x.UserId));
+        modelBuilder.Entity<LivraisonWebhook>(e => e.HasIndex(x => new { x.WebhookId, x.CreeLe }));
 
         modelBuilder.Entity<Application>(entity =>
         {

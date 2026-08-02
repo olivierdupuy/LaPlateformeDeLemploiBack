@@ -135,3 +135,62 @@ jobs:
             -dest:contentPath="${{ secrets.IIS_SITE_NAME }}",computerName="https://${{ secrets.IIS_SERVER_IP }}:8172/msdeploy.axd",userName="${{ secrets.WEBDEPLOY_USERNAME }}",password="${{ secrets.WEBDEPLOY_PASSWORD }}",authType="Basic" ^
             -enableRule:AppOffline ^
             -allowUntrusted
+
+      # ══════════════════════════════════════════════
+      #  Verification apres deploiement
+      #
+      #  « msdeploy » rendait la main et le workflow passait au vert. Il
+      #  ne rendait compte que du transfert des fichiers : jamais de ce
+      #  que l'API repondait ensuite. Une chaine de connexion fausse,
+      #  une migration qui echoue au demarrage, un pool qui ne redemarre
+      #  pas produisaient un deploiement « reussi » et une API morte.
+      #
+      #  « /api/sante » existait deja et savait repondre. Personne ne
+      #  l'appelait.
+      # ══════════════════════════════════════════════
+      - name: Test de fumee
+        shell: pwsh
+        run: |
+          $api = "https://api.laplateformedelemploi.com/api"
+
+          # Le pool redemarre et les migrations s'appliquent au
+          # demarrage : sur une base qui bouge, cela prend du temps. Six
+          # essais espaces de quinze secondes couvrent une minute et
+          # demie, ce qui est large et reste court en cas d'echec.
+          $sain = $false
+          for ($i = 1; $i -le 6; $i++) {
+            try {
+              $r = Invoke-WebRequest -Uri "$api/sante" -TimeoutSec 25 -UseBasicParsing
+              if ($r.StatusCode -eq 200) {
+                Write-Host "OK   Sante ($($r.Content))"
+                $sain = $true
+                break
+              }
+            } catch {
+              Write-Host ".. API injoignable ($($_.Exception.Message)), essai $i/6"
+            }
+            Start-Sleep -Seconds 15
+          }
+
+          if (-not $sain) {
+            Write-Error "ECHEC — l'API ne repond pas 200 sur /api/sante apres deploiement."
+            exit 1
+          }
+
+          # Une lecture publique qui touche la base : si la chaine de
+          # connexion est fausse, « /sante » peut encore repondre alors
+          # que rien ne fonctionne.
+          try {
+            $offres = Invoke-WebRequest -Uri "$api/joboffers?page=1&pageSize=1" -TimeoutSec 25 -UseBasicParsing
+            if ($offres.StatusCode -ne 200) {
+              Write-Error "ECHEC — la lecture des offres repond $($offres.StatusCode)."
+              exit 1
+            }
+            Write-Host "OK   Lecture des offres"
+          } catch {
+            Write-Error "ECHEC — la lecture des offres a echoue : $($_.Exception.Message)"
+            exit 1
+          }
+
+          Write-Host ""
+          Write-Host "Deploiement verifie."

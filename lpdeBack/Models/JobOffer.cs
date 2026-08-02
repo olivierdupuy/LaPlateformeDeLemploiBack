@@ -134,6 +134,45 @@ public class JobOffer
     [MaxLength(500)]
     public string? ExternalUrl { get; set; } // URL de l'offre sur le site source (pour postuler)
 
+    // ── Qualite du catalogue ──
+
+    /// <summary>
+    /// Empreinte de contenu, pour reconnaitre la meme offre publiee sur
+    /// plusieurs agregateurs.
+    ///
+    /// « ExternalId » ne suffit pas : il dedoublonne au sein d'une
+    /// source, mais la meme annonce arrive de France Travail, d'Adzuna
+    /// et de Jooble avec trois identifiants differents. Le candidat, lui,
+    /// voit trois fois le meme poste et croit le catalogue gonfle.
+    ///
+    /// L'empreinte est calculee sur ce qui identifie reellement un
+    /// poste — intitule normalise, entreprise, ville — et non sur la
+    /// description, que chaque agregateur reformate.
+    /// </summary>
+    [MaxLength(64)]
+    public string? Empreinte { get; set; }
+
+    /// <summary>
+    /// Quand cette offre a ete revue pour la derniere fois chez sa
+    /// source. Une offre importee qui n'apparait plus a l'import suivant
+    /// a ete retiree ou pourvue : sans cette date, elle reste en ligne
+    /// pour toujours. Une offre morte coute plus cher qu'une offre
+    /// absente — elle fait perdre une candidature et la confiance avec.
+    /// </summary>
+    public DateTime? VueChezLaSourceLe { get; set; }
+
+    /// <summary>
+    /// Indice de suspicion, de 0 a 100, pose par l'analyse automatique.
+    /// Il ne bloque rien : au-dela d'un seuil, l'offre entre en file de
+    /// moderation. Un blocage automatique sur un signal statistique
+    /// ecarterait aussi des annonces legitimes, et personne ne le saurait.
+    /// </summary>
+    public int? ScoreFraude { get; set; }
+
+    /// <summary>Ce que l'analyse a releve, pour que le moderateur juge sur pieces.</summary>
+    [MaxLength(500)]
+    public string? MotifFraude { get; set; }
+
     // FK
     public string? CreatedByUserId { get; set; }
     public AppUser? CreatedByUser { get; set; }

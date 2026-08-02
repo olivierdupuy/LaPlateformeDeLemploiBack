@@ -25,13 +25,88 @@ public class JobImportBackgroundService : BackgroundService
         await RunOnce(startupOnly: true, stoppingToken);
         await ReparseSalaries(stoppingToken);
 
+        await Entretenir(stoppingToken);
+
         using var timer = new PeriodicTimer(TimeSpan.FromHours(6));
         try
         {
             while (await timer.WaitForNextTickAsync(stoppingToken))
+            {
                 await RunOnce(startupOnly: false, stoppingToken);
+                // Apres l'import, pas avant : une offre revue chez sa
+                // source a l'instant ne doit pas etre retiree parce que
+                // l'entretien est passe cinq minutes plus tot.
+                await Entretenir(stoppingToken);
+            }
         }
         catch (OperationCanceledException) { /* arrêt normal */ }
+    }
+
+    /// <summary>
+    /// L'entretien du catalogue, apres chaque import.
+    ///
+    /// Deux nettoyages qui n'existaient pas et dont l'absence se voyait
+    /// a l'ecran :
+    ///
+    ///   Les offres importees qu'on ne revoit plus chez leur source
+    ///   restaient en ligne indefiniment. Un candidat postulait a un
+    ///   poste pourvu depuis six mois, n'obtenait jamais de reponse, et
+    ///   en tirait la conclusion qui s'impose sur le site entier.
+    ///
+    ///   Les mises en avant echues ne se retiraient pas. Le client
+    ///   payait quinze jours et obtenait l'eternite ; a mesure que les
+    ///   offres poussees s'accumulaient, le classement cessait de
+    ///   vouloir dire quoi que ce soit.
+    ///
+    /// Enrobe : un entretien qui echoue ne doit pas emporter la boucle
+    /// d'import avec lui.
+    /// </summary>
+    private async Task Entretenir(CancellationToken ct)
+    {
+        try
+        {
+            using var scope = _scopeFactory.CreateScope();
+
+            var qualite = scope.ServiceProvider.GetRequiredService<QualiteCatalogue>();
+            var retirees = await qualite.ExpirerLesImportees();
+
+            var facturation = scope.ServiceProvider.GetRequiredService<FacturationService>();
+            var misesEnAvant = await facturation.RetirerLesEchues();
+
+            // ── Signaler les nouvelles offres ──
+            //
+            // Le plan de site est relu quand le moteur le decide : au
+            // mieux le lendemain, souvent la semaine suivante. Une offre
+            // pourvue en quinze jours n'a pas ce temps devant elle.
+            //
+            // On ne signale que ce qui vient d'entrer, et pas plus d'un
+            // millier : signaler tout le catalogue a chaque passage
+            // serait traite comme du bruit, et a juste titre.
+            var db = scope.ServiceProvider.GetRequiredService<Data.AppDbContext>();
+            var recentes = await db.JobOffers
+                .Where(o => o.IsActive && !o.IsDraft
+                            && o.ModerationStatus == "Approved"
+                            && o.CreatedAt > DateTime.UtcNow.AddHours(-7))
+                .OrderByDescending(o => o.Id)
+                .Select(o => o.Id)
+                .Take(1_000)
+                .ToListAsync(ct);
+
+            if (recentes.Count > 0)
+            {
+                var indexNow = scope.ServiceProvider.GetRequiredService<IndexNow>();
+                await indexNow.SignalerOffres(recentes, ct);
+            }
+
+            if (retirees > 0 || misesEnAvant > 0)
+                _logger.LogInformation(
+                    "Entretien du catalogue : {Retirees} offres perimees retirees, {Mises} mises en avant echues.",
+                    retirees, misesEnAvant);
+        }
+        catch (Exception e)
+        {
+            _logger.LogError(e, "Entretien du catalogue en échec");
+        }
     }
 
     /// <summary>
