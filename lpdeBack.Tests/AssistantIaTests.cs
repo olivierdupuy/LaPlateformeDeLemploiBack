@@ -176,6 +176,52 @@ public class AssistantIaTests
         Assert.Equal(avant - 1, assistant.Restant);
     }
 
+    // ══════════════════════════════════════
+    //  Le bilan, pour la console
+    // ══════════════════════════════════════
+
+    [Fact]
+    public void Sans_modele_le_bilan_distingue_l_absence_de_cle_du_quota_epuise()
+    {
+        // Les deux se ressemblent de l'exterieur : le site se tait et
+        // retombe sur ses regles. Un administrateur doit pouvoir les
+        // separer, sinon il cherche une panne la ou il y a un plafond.
+        var sansCle = Assistant().Etat();
+        Assert.False(sansCle.Configure);
+        Assert.False(sansCle.Disponible);
+
+        var quotaEpuise = Injoignable(plafond: 0).Etat();
+        Assert.True(quotaEpuise.Configure);
+        Assert.False(quotaEpuise.Disponible);
+        Assert.Equal(0, quotaEpuise.Restant);
+    }
+
+    [Fact]
+    public async Task Le_bilan_dit_a_cause_de_quoi_le_quota_part()
+    {
+        // Quand le plafond tombe avant midi, c'est la premiere question.
+        // Une relecture qui part a chaque frappe et une synthese sur une
+        // fiche d'offre ne se corrigent pas de la meme facon.
+        var assistant = Injoignable(plafond: 5);
+        await assistant.Relire(RequeteDure, RequeteLibre.Analyser(RequeteDure));
+
+        var bilan = assistant.Etat();
+
+        Assert.Equal(1, bilan.Consommes);
+        Assert.Equal("relecture de recherche", Assert.Single(bilan.ParUsage).Key);
+    }
+
+    [Fact]
+    public async Task Un_appel_bloque_par_le_plafond_n_est_pas_impute_a_son_usage()
+    {
+        // Il n'est jamais parti : le compter dans la repartition
+        // designerait un coupable qui n'a rien consomme.
+        var assistant = Injoignable(plafond: 0);
+        await assistant.Relire(RequeteDure, RequeteLibre.Analyser(RequeteDure));
+
+        Assert.Empty(assistant.Etat().ParUsage);
+    }
+
     [Fact]
     public async Task Le_plafond_atteint_les_appels_suivants_ne_partent_plus()
     {

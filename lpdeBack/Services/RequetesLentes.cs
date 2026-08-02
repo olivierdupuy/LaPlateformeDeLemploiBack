@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Data.Common;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 
@@ -74,5 +75,83 @@ public sealed class RequetesLentes : DbCommandInterceptor
         _journal.LogWarning(
             "Requete lente : {DureeMs} ms — {Sql}",
             (int)duree.TotalMilliseconds, sql);
+
+        Retenir(sql, (int)duree.TotalMilliseconds);
     }
+
+    // ══════════════════════════════════════
+    //  De quoi le voir depuis la console
+    // ══════════════════════════════════════
+    //
+    // Le journal Serilog dit tout, et personne ne l'ouvre : il faut un
+    // acces au serveur, et savoir quoi y chercher. Une page lente se
+    // constate depuis un navigateur, et c'est de la que la question se
+    // pose — « pourquoi celle-ci traine ». On garde donc en memoire de
+    // quoi y repondre.
+    //
+    // Par forme de requete et non par occurrence : la meme requete lente
+    // appelee deux cents fois est un seul probleme, pas deux cents. Ce
+    // qu'on veut savoir, c'est laquelle, combien de fois, et au pire
+    // combien de temps.
+
+    /// <summary>Une forme de requete lente, et ce qu'elle a coute.</summary>
+    /// <param name="Sql">Le texte, tronque. Les parametres n'y sont jamais :
+    /// ils contiennent des adresses et des noms.</param>
+    public sealed record Trace(string Sql, int Occurrences, int PireMs, int DernierMs, DateTime Derniere);
+
+    /// <summary>
+    /// Combien de formes distinctes on retient.
+    ///
+    /// Cinquante : au-dela, ce n'est plus un diagnostic mais un journal,
+    /// et un journal en memoire finit par la remplir. Quand le tableau
+    /// est plein, la forme la moins recente cede sa place.
+    /// </summary>
+    private const int FormesRetenues = 50;
+
+    private sealed class Cumul
+    {
+        public int Occurrences;
+        public int PireMs;
+        public int DernierMs;
+        public DateTime Derniere;
+    }
+
+    private static readonly ConcurrentDictionary<string, Cumul> _formes = new();
+
+    private static void Retenir(string sql, int ms)
+    {
+        var cumul = _formes.GetOrAdd(sql, _ => new Cumul());
+
+        // Sans verrou : deux requetes lentes simultanees sur la meme forme
+        // peuvent perdre une unite de compteur. Le chiffre sert a classer,
+        // pas a facturer — un verrou par requete couterait plus que
+        // l'exactitude ne rapporte.
+        cumul.Occurrences++;
+        cumul.DernierMs = ms;
+        cumul.Derniere = DateTime.UtcNow;
+        if (ms > cumul.PireMs) cumul.PireMs = ms;
+
+        if (_formes.Count > FormesRetenues)
+        {
+            var plusVieille = _formes.OrderBy(f => f.Value.Derniere).FirstOrDefault();
+            if (plusVieille.Key is not null) _formes.TryRemove(plusVieille.Key, out _);
+        }
+    }
+
+    /// <summary>Les formes les plus couteuses d'abord : le pire temps mesure.</summary>
+    public static IReadOnlyList<Trace> Rapport() =>
+        _formes
+            .Select(f => new Trace(f.Key, f.Value.Occurrences, f.Value.PireMs,
+                                   f.Value.DernierMs, f.Value.Derniere))
+            .OrderByDescending(t => t.PireMs)
+            .ToList();
+
+    /// <summary>
+    /// Repartir de zero.
+    ///
+    /// Apres avoir pose l'index qui manquait, on veut savoir si la
+    /// requete est encore lente — et non relire un cumul qui date d'avant
+    /// le correctif.
+    /// </summary>
+    public static void Oublier() => _formes.Clear();
 }

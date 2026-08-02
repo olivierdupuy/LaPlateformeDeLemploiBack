@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -60,7 +61,52 @@ public class AssistantIa
     /// </summary>
     public const int PlafondParDefaut = 200;
 
-    private sealed class Compteur { public int Valeur; }
+    /// <summary>
+    /// Ce qu'on a consomme aujourd'hui, et pour quoi faire.
+    ///
+    /// La repartition n'est pas un ornement : quand le plafond est atteint
+    /// avant midi, la question suivante est « a cause de quoi ». Une
+    /// relecture de recherche qui part sur chaque frappe et une synthese
+    /// de correspondance sur une fiche d'offre ne se corrigent pas de la
+    /// meme facon.
+    /// </summary>
+    private sealed class Compteur
+    {
+        public int Valeur;
+        public readonly ConcurrentDictionary<string, int> ParUsage = new();
+    }
+
+    /// <summary>Le bilan du jour, tel que la console l'affiche.</summary>
+    /// <param name="Configure">Un modele est joignable — cle comprise.</param>
+    public sealed record Bilan(
+        bool Configure,
+        bool Disponible,
+        int Plafond,
+        int Consommes,
+        int Restant,
+        string? Modele,
+        IReadOnlyDictionary<string, int> ParUsage);
+
+    /// <summary>
+    /// Ou en est le quota, et a cause de quoi.
+    ///
+    /// Sans cet etat, « plafond atteint » et « aucun modele configure »
+    /// sont indiscernables : dans les deux cas le site se tait et retombe
+    /// sur ses regles, ce qui est le comportement voulu — mais laisse
+    /// l'administrateur sans explication.
+    /// </summary>
+    public Bilan Etat()
+    {
+        var compteur = Compteur_();
+        return new Bilan(
+            Configure: _ia.IsConfigured,
+            Disponible: Disponible,
+            Plafond: _plafond,
+            Consommes: compteur.Valeur,
+            Restant: Restant,
+            Modele: _ia.IsConfigured ? _ia.Model : null,
+            ParUsage: compteur.ParUsage.ToDictionary(x => x.Key, x => x.Value));
+    }
 
     public AssistantIa(AiClient ia, IMemoryCache cache, IConfiguration config, ILogger<AssistantIa> log)
     {
@@ -108,8 +154,12 @@ public class AssistantIa
     /// consomme rien et doit rester servie meme quand le quota du jour est
     /// epuise.
     /// </summary>
+    /// <param name="usage">
+    /// A quoi sert cet appel. Sert au bilan : quand le quota est epuise
+    /// avant midi, c'est la premiere chose qu'on veut savoir.
+    /// </param>
     private async Task<string?> Demander(
-        string cle, string consigne, string question,
+        string usage, string cle, string consigne, string question,
         double temperature, int maxTokens, CancellationToken ct)
     {
         if (_cache.TryGetValue<string>(cle, out var connu)) return connu;
@@ -126,6 +176,8 @@ public class AssistantIa
                     + "Le site continue sur ses regles jusqu'a minuit.", _plafond);
             return null;
         }
+
+        compteur.ParUsage.AddOrUpdate(usage, 1, (_, n) => n + 1);
 
         try
         {
@@ -210,6 +262,7 @@ public class AssistantIa
         if (!regles.MeriteUneRelecture) return regles;
 
         var json = await Demander(
+            "relecture de recherche",
             $"ia:req:{Empreinte(texte)}",
             "Tu analyses des recherches d'emploi ecrites en francais par des particuliers. "
             + "Tu extrais uniquement ce qui est explicitement dit ou clairement implique. "
@@ -333,6 +386,7 @@ public class AssistantIa
         var matiere = string.Join(" | ", r.Raisons) + " || " + string.Join(" | ", r.Reserves);
 
         var json = await Demander(
+            "synthèse de correspondance",
             $"ia:corr:{Empreinte(titreOffre + matiere)}",
             "Tu expliques a un candidat pourquoi une offre lui est proposee. "
             + "Tu ne disposes que des elements fournis et tu n'en inventes aucun. "
@@ -385,6 +439,7 @@ public class AssistantIa
         if (description.Length > 4000) description = description[..4000] + "…";
 
         var json = await Demander(
+            "avis de modération",
             $"ia:mod:{offre.Id}:{Empreinte(offre.Title + description)}",
             "Tu assistes la moderation d'un site d'emploi francais. Tu evalues le risque "
             + "qu'une annonce soit frauduleuse, trompeuse ou illegale. Tu es mesure : la "

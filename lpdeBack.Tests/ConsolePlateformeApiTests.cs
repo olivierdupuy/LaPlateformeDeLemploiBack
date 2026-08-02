@@ -364,6 +364,50 @@ public class ConsolePlateformeApiTests
     }
 
     // ══════════════════════════════════════
+    //  Les deux panneaux d'exploitation
+    // ══════════════════════════════════════
+
+    [Theory]
+    [InlineData("/api/sante/assistance")]
+    [InlineData("/api/sante/requetes-lentes")]
+    public async Task Les_releves_d_exploitation_restent_reserves_aux_administrateurs(string chemin)
+    {
+        // Le releve des requetes lentes expose la forme des requetes, donc
+        // celle du schema ; celui de l'assistance expose le nom du modele
+        // et la depense. Ni l'un ni l'autre ne regarde un recruteur.
+        var recruteur = await _api.Compte($"rec-expl-{chemin.GetHashCode():X}", "Recruiter");
+        Assert.Equal(HttpStatusCode.Forbidden,
+            (await _api.ClientPour(recruteur).GetAsync(chemin)).StatusCode);
+
+        Assert.Equal(HttpStatusCode.Unauthorized,
+            (await _api.ClientAnonyme().GetAsync(chemin)).StatusCode);
+    }
+
+    [Fact]
+    public async Task Le_releve_des_requetes_lentes_annonce_son_seuil()
+    {
+        // Un releve vide ne veut rien dire tant qu'on ignore a partir de
+        // quand une requete y entre.
+        var admin = await _api.Compte("adm-lentes", "Admin");
+        var r = await Lire(await _api.ClientPour(admin).GetAsync("/api/sante/requetes-lentes"));
+
+        Assert.True(r.GetProperty("seuilMs").GetInt32() > 0);
+        Assert.Equal(JsonValueKind.Array, r.GetProperty("formes").ValueKind);
+    }
+
+    [Fact]
+    public async Task Le_quota_d_assistance_dit_quand_il_repart()
+    {
+        // Le compteur disparait de lui-meme a minuit UTC : sans cette
+        // date, on cherche un bouton de remise a zero qui n'existe pas.
+        var admin = await _api.Compte("adm-assist", "Admin");
+        var r = await Lire(await _api.ClientPour(admin).GetAsync("/api/sante/assistance"));
+
+        Assert.True(r.GetProperty("plafond").GetInt32() > 0);
+        Assert.True(r.GetProperty("remiseAZero").GetDateTime() > DateTime.UtcNow);
+    }
+
+    // ══════════════════════════════════════
     //  Le catalogue
     // ══════════════════════════════════════
 

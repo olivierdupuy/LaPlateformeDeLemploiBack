@@ -63,6 +63,71 @@ public class SanteController : ControllerBase
         return StatusCode(bilan.Vivant ? 200 : 503, new { etat = bilan.Etat });
     }
 
+    /// <summary>
+    /// Ou en est le quota d'assistance, et a cause de quoi.
+    ///
+    /// Le compteur vivait en memoire et personne ne le voyait : la depense
+    /// restait invisible jusqu'a la facture. Pire, « plafond atteint » et
+    /// « aucun modele configure » etaient indiscernables — dans les deux
+    /// cas le site se tait et retombe sur ses regles, ce qui est le
+    /// comportement voulu, mais laisse l'administrateur sans explication.
+    /// </summary>
+    [HttpGet("assistance")]
+    [Authorize(Roles = "Admin")]
+    public ActionResult<object> Assistance([FromServices] AssistantIa assistant)
+    {
+        Response.Headers["Cache-Control"] = "no-store";
+        var b = assistant.Etat();
+
+        return Ok(new
+        {
+            b.Configure, b.Disponible, b.Plafond, b.Consommes, b.Restant, b.Modele,
+            parUsage = b.ParUsage.OrderByDescending(x => x.Value)
+                                 .Select(x => new { usage = x.Key, appels = x.Value }),
+            // Le compteur disparait de lui-meme a minuit UTC : le dire
+            // evite de chercher un bouton de remise a zero qui n'existe pas.
+            remiseAZero = DateTime.UtcNow.Date.AddDays(1),
+        });
+    }
+
+    /// <summary>
+    /// Les requetes qui trainent.
+    ///
+    /// L'intercepteur les journalise depuis le debut, dans Serilog : il
+    /// faut un acces au serveur et savoir quoi y chercher. Or une page
+    /// lente se constate depuis un navigateur, et c'est de la que la
+    /// question se pose. On soupconne le reseau pendant qu'un index
+    /// manque sur une colonne ajoutee six mois plus tot.
+    ///
+    /// Par forme de requete : la meme requete lente appelee deux cents
+    /// fois est un seul probleme. Les parametres n'y figurent jamais —
+    /// ils contiennent des adresses et des noms.
+    /// </summary>
+    [HttpGet("requetes-lentes")]
+    [Authorize(Roles = "Admin")]
+    public ActionResult<object> RequetesLentesRapport()
+    {
+        Response.Headers["Cache-Control"] = "no-store";
+        var lignes = RequetesLentes.Rapport();
+
+        return Ok(new
+        {
+            seuilMs = int.TryParse(_config["Diagnostics:SeuilRequeteLenteMs"], out var s) ? s : 500,
+            depuis = Demarrage,
+            formes = lignes,
+            total = lignes.Sum(l => l.Occurrences),
+        });
+    }
+
+    /// <summary>Repartir de zero apres avoir pose l'index qui manquait.</summary>
+    [HttpDelete("requetes-lentes")]
+    [Authorize(Roles = "Admin")]
+    public IActionResult OublierRequetesLentes()
+    {
+        RequetesLentes.Oublier();
+        return Ok(new { message = "Relevé remis à zéro." });
+    }
+
     /// <summary>Le detail, pour qui a le droit de le lire.</summary>
     [HttpGet("detail")]
     [Authorize(Roles = "Admin")]
