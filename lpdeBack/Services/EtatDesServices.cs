@@ -19,7 +19,12 @@ public static class EtatDesServices
     private sealed record Passage(DateTime Quand, bool Reussi, string Detail);
 
     /// <summary>L'etat d'une tache, tel que la sonde le publie.</summary>
-    public sealed record Ligne(string Service, string Etat, DateTime? DernierPassage, string? Detail)
+    public sealed record Ligne(
+        string Service,
+        string Etat,
+        DateTime? DernierPassage,
+        string? Detail,
+        double CadenceHeures)
     {
         /// <summary>Vrai si cette tache demande de l'attention.</summary>
         public bool Inquiete => Etat is "en échec" or "en retard" or "jamais passé";
@@ -79,7 +84,12 @@ public static class EtatDesServices
             else if (DateTime.UtcNow - p.Quand > cadence) etat = "en retard";
             else etat = "sain";
 
-            lignes.Add(new Ligne(nom, etat, p?.Quand, p?.Detail));
+            // La cadence sort avec la ligne : l'ecran d'exploitation en
+            // fait une jauge d'echeance — « ou en est cette tache dans
+            // l'intervalle qu'on lui accorde ». Sans elle, « dernier
+            // passage il y a 6 jours » ne veut rien dire : c'est
+            // rassurant pour la purge, alarmant pour l'import.
+            lignes.Add(new Ligne(nom, etat, p?.Quand, p?.Detail, cadence.TotalHours));
         }
         return lignes;
     }
