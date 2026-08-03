@@ -743,6 +743,51 @@ public class JobOffersController : ControllerBase
         return new { company = me.Company, members };
     }
 
+    public sealed class EtatOffreDto
+    {
+        [EtatOffre]
+        public string Etat { get; set; } = string.Empty;
+    }
+
+    /// <summary>
+    /// Ouvrir, suspendre ou fermer une offre.
+    ///
+    /// Le seul geste disponible etait la suppression, qui emporte les
+    /// candidatures deja recues — un prix qu'aucun recruteur ne devrait
+    /// payer pour mettre une annonce en pause le temps d'un arbitrage.
+    ///
+    /// Une offre fermee ou suspendue sort du catalogue de la meme facon :
+    /// la difference n'existe que pour celui qui la gere, et c'est
+    /// exactement ce qu'on veut. Une offre pourvue et une offre en
+    /// attente d'arbitrage ne se ressemblaient plus que par accident.
+    /// </summary>
+    [HttpPatch("{id}/etat")]
+    [Authorize(Roles = "Admin,Recruiter")]
+    public async Task<ActionResult<object>> ChangerEtat(int id, EtatOffreDto dto)
+    {
+        var job = await _context.JobOffers.FindAsync(id);
+        if (job == null) return NotFound();
+        if (!IsAdmin() && !await _perimetre.PeutGerer(GetUserId(), job.CreatedByUserId)) return Forbid();
+
+        if (!EtatOffre.Existe(dto.Etat)) return BadRequest(new { message = "État inconnu." });
+
+        // Un brouillon n'a pas d'etat de publication : il n'a jamais ete
+        // publie. Le suspendre n'aurait pas de sens, et le rouvrir
+        // sauterait la moderation.
+        if (job.IsDraft)
+            return BadRequest(new { message = "Ce brouillon n'a jamais été publié : terminez sa rédaction pour le mettre en ligne." });
+
+        // Rouvrir une offre que la moderation a refusee la remettrait en
+        // ligne sans second regard.
+        if (dto.Etat == EtatOffre.Ouverte && job.ModerationStatus != "Approved")
+            return BadRequest(new { message = "Cette offre attend la modération : elle ne peut pas être rouverte d'ici." });
+
+        EtatOffre.Appliquer(job, dto.Etat);
+        await _context.SaveChangesAsync();
+
+        return Ok(new { job.Id, job.EtatPublication, job.IsActive });
+    }
+
     [HttpPatch("{id}/renew")]
     [Authorize(Roles = "Admin,Recruiter")]
     public async Task<ActionResult<JobOffer>> RenewOffer(int id)
@@ -758,7 +803,7 @@ public class JobOffersController : ControllerBase
             .FirstOrDefaultAsync();
         var duration = int.TryParse(durationStr, out var d) ? d : 30;
 
-        job.IsActive = true;
+        EtatOffre.Appliquer(job, true);
         job.ExpiresAt = DateTime.UtcNow.AddDays(duration);
         job.ModerationStatus = "Approved"; // Renewal re-approves
         await _context.SaveChangesAsync();
@@ -1463,6 +1508,7 @@ public class JobOffersController : ControllerBase
             CreatedByUserId = GetUserId(),
             ModerationStatus = needsReview ? "Pending" : "Approved",
             IsActive = !needsReview && !dto.IsDraft,
+            EtatPublication = !needsReview && !dto.IsDraft ? EtatOffre.Ouverte : EtatOffre.Fermee,
         };
 
         // Le type de lieu de travail est la source de verite du drapeau teletravail,
@@ -1570,7 +1616,7 @@ public class JobOffersController : ControllerBase
         job.IsDraft = dto.IsDraft;
         // Un brouillon etait inactif par construction : le publier doit le
         // rendre visible, quel que soit l'etat que porte le formulaire.
-        job.IsActive = dto.IsDraft ? false : (wasDraft || dto.IsActive);
+        EtatOffre.Appliquer(job, dto.IsDraft ? false : (wasDraft || dto.IsActive));
         // Un brouillon peut avoir dormi plus longtemps que sa duree d'affichage :
         // sans cette remise a zero, il serait retire des sa publication.
         if (wasDraft && !dto.IsDraft && (job.ExpiresAt == null || job.ExpiresAt < DateTime.UtcNow))
@@ -1603,7 +1649,7 @@ public class JobOffersController : ControllerBase
             {
                 job.ModerationStatus = "Pending";
                 job.ModerationNote = null;
-                job.IsActive = false;
+                EtatOffre.Appliquer(job, false);
             }
         }
 

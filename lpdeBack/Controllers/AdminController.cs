@@ -422,7 +422,7 @@ public class AdminController : ControllerBase
         if (job == null) return NotFound();
 
         job.ModerationStatus = "Approved";
-        job.IsActive = true;
+        EtatOffre.Appliquer(job, true);
         await _context.SaveChangesAsync();
 
         await _log.Log("ApproveOffer", "JobOffer", id, $"Offre approuvée : {job.Title}", UserId(), UserFullName(), Ip());
@@ -436,7 +436,7 @@ public class AdminController : ControllerBase
         if (job == null) return NotFound();
 
         job.ModerationStatus = "Rejected";
-        job.IsActive = false;
+        EtatOffre.Appliquer(job, false);
         job.ModerationNote = dto.Note;
         await _context.SaveChangesAsync();
 

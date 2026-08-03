@@ -245,7 +245,7 @@ public class ApiPubliqueController : ControllerBase
 
         if (offre is null) return NotFound();
 
-        offre.IsActive = false;
+        EtatOffre.Appliquer(offre, false);
         await _context.SaveChangesAsync();
         return NoContent();
     }

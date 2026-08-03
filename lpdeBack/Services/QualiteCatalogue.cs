@@ -185,7 +185,9 @@ public class QualiteCatalogue
 
         if (perimees.Count == 0) return 0;
 
-        foreach (var o in perimees) o.IsActive = false;
+        // Une offre qui expire est fermee, pas suspendue : personne ne
+        // l'a mise en pause, son affichage a simplement pris fin.
+        foreach (var o in perimees) EtatOffre.Appliquer(o, false);
         await _context.SaveChangesAsync();
 
         _journal.LogInformation(

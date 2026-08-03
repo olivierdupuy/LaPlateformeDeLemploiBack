@@ -33,7 +33,29 @@ public class JobOffer
 
     public DateTime? ExpiresAt { get; set; }
 
+    /// <summary>
+    /// Ce que le public voit. Reste la seule condition des requetes de
+    /// catalogue, et se deduit de « EtatPublication » — voir ce champ.
+    /// </summary>
     public bool IsActive { get; set; } = true;
+
+    /// <summary>
+    /// Ouverte, suspendue ou fermee.
+    ///
+    /// « IsActive » repondait a la question du public — l'offre est-elle
+    /// visible — mais pas a celle du recruteur : pourquoi ne l'est-elle
+    /// plus. Une offre retiree le temps d'un arbitrage et une offre
+    /// pourvue se ressemblaient trait pour trait, et la seule maniere de
+    /// mettre une annonce en pause etait de la supprimer ou de la laisser
+    /// tourner en recevant des candidatures qu'on ne traiterait pas.
+    ///
+    /// L'invariant est simple et tenu par « EtatOffre.Appliquer » :
+    /// « IsActive » vaut vrai si et seulement si l'etat est « ouverte ».
+    /// Les requetes publiques n'ont donc pas bouge — c'est ce qui rend ce
+    /// champ sans risque pour le catalogue.
+    /// </summary>
+    [MaxLength(20)]
+    public string EtatPublication { get; set; } = EtatOffre.Ouverte;
 
     [MaxLength(500)]
     public string? CompanyLogoUrl { get; set; }

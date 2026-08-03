@@ -272,7 +272,7 @@ public class DsaController : ControllerBase
             {
                 var offre = await _context.JobOffers.FindAsync(cible);
                 if (offre is null) return "Aucune (offre deja disparue)";
-                offre.IsActive = false;
+                EtatOffre.Appliquer(offre, false);
                 offre.ModerationStatus = "Rejected";
                 offre.ModerationNote = $"Retiree sur signalement {s.Reference} — {s.Motif}";
                 return "ContenuRetire";
