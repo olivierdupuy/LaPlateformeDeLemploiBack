@@ -273,6 +273,87 @@ public class RecruiterFeaturesController : ControllerBase
     }
 
     // ═══════════════════════════════════
+    //  2 quinquies. ROLES DE L'EQUIPE
+    // ═══════════════════════════════════
+
+    /// <summary>
+    /// Qui compose l'equipe, et avec quel role.
+    ///
+    /// Visible de tous les membres : savoir a qui s'adresser pour faire
+    /// modifier une offre qu'on ne peut pas toucher soi-meme fait partie
+    /// du reglage. Le cacher transformerait une restriction comprehensible
+    /// en mur sans explication.
+    /// </summary>
+    [HttpGet("equipe")]
+    public async Task<ActionResult<object>> Equipe()
+    {
+        var societe = await _perimetre.Societe(UserId());
+        if (societe == null)
+            return Ok(new { societe = (string?)null, jeSuisProprietaire = false, membres = Array.Empty<object>() });
+
+        var ids = await _perimetre.Equipe(UserId());
+        var membres = await _context.Users.AsNoTracking()
+            .Where(u => ids.Contains(u.Id))
+            .OrderBy(u => u.CreatedAt)
+            .Select(u => new
+            {
+                u.Id,
+                nom = (u.FirstName + " " + u.LastName).Trim(),
+                u.Email,
+                role = u.RoleEquipe,
+                moi = u.Id == UserId(),
+            })
+            .ToListAsync();
+
+        return Ok(new
+        {
+            societe,
+            jeSuisProprietaire = await _perimetre.EstProprietaire(UserId()),
+            membres,
+        });
+    }
+
+    /// <summary>
+    /// Changer le role d'un membre. Reserve aux proprietaires.
+    ///
+    /// Deux garde-fous. On ne se retire pas soi-meme la propriete : ce
+    /// serait le seul geste irreversible de l'ecran, puisque plus personne
+    /// ne pourrait la redonner. Et une equipe garde toujours au moins un
+    /// proprietaire, sans quoi ses offres deviennent ingerables sauf par
+    /// l'administration du site.
+    /// </summary>
+    [HttpPatch("equipe/{membreId}/role")]
+    public async Task<IActionResult> ChangerRole(string membreId, RoleEquipeDto dto)
+    {
+        if (!RolesEquipe.Existe(dto.Role)) return BadRequest(new { message = "Rôle inconnu." });
+
+        if (!IsAdmin() && !await _perimetre.EstProprietaire(UserId()))
+            return Forbid();
+
+        if (membreId == UserId() && dto.Role != RolesEquipe.Proprietaire)
+            return BadRequest(new { message = "Vous ne pouvez pas retirer votre propre rôle de propriétaire : demandez-le à un autre propriétaire." });
+
+        var ids = await _perimetre.Equipe(UserId());
+        if (!IsAdmin() && !ids.Contains(membreId))
+            return Forbid();
+
+        var membre = await _context.Users.FirstOrDefaultAsync(u => u.Id == membreId);
+        if (membre == null) return NotFound();
+
+        if (dto.Role == RolesEquipe.Membre)
+        {
+            var proprietaires = await _context.Users
+                .CountAsync(u => ids.Contains(u.Id) && u.RoleEquipe == RolesEquipe.Proprietaire);
+            if (proprietaires <= 1 && membre.RoleEquipe == RolesEquipe.Proprietaire)
+                return BadRequest(new { message = "Une équipe doit garder au moins un propriétaire." });
+        }
+
+        membre.RoleEquipe = dto.Role;
+        await _context.SaveChangesAsync();
+        return NoContent();
+    }
+
+    // ═══════════════════════════════════
     //  2 quater. NOTES D'EQUIPE SUR UNE CANDIDATURE
     // ═══════════════════════════════════
 
@@ -292,7 +373,7 @@ public class RecruiterFeaturesController : ControllerBase
         var app = await _context.Applications.Include(a => a.JobOffer)
             .FirstOrDefaultAsync(a => a.Id == id);
         if (app == null) return NotFound();
-        if (!IsAdmin() && !await _perimetre.PeutGerer(UserId(), app.JobOffer.CreatedByUserId)) return Forbid();
+        if (!IsAdmin() && !await _perimetre.PeutVoir(UserId(), app.JobOffer.CreatedByUserId)) return Forbid();
 
         return await _context.NotesCandidature.AsNoTracking()
             .Where(n => n.ApplicationId == id)
@@ -307,7 +388,7 @@ public class RecruiterFeaturesController : ControllerBase
         var app = await _context.Applications.Include(a => a.JobOffer)
             .FirstOrDefaultAsync(a => a.Id == id);
         if (app == null) return NotFound();
-        if (!IsAdmin() && !await _perimetre.PeutGerer(UserId(), app.JobOffer.CreatedByUserId)) return Forbid();
+        if (!IsAdmin() && !await _perimetre.PeutVoir(UserId(), app.JobOffer.CreatedByUserId)) return Forbid();
 
         var moi = await _context.Users.FindAsync(UserId());
 
@@ -621,6 +702,13 @@ public class TemplateDto
 
     [Longueur(Limites.Nom), SansBalisage]
     public string? Category { get; set; }
+}
+
+public class RoleEquipeDto
+{
+    [Required(ErrorMessage = "Indiquez le rôle.")]
+    [MaxLength(20)]
+    public string Role { get; set; } = string.Empty;
 }
 
 public class NoteEquipeDto

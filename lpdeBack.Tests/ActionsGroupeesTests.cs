@@ -98,6 +98,14 @@ public class ActionsGroupeesTests
         // en lot. Deux recruteurs, une meme entreprise.
         var une = await _api.Compte("ag-equipe-1", "Recruiter", "Maison Commune");
         var autre = await _api.Compte("ag-equipe-2", "Recruiter", "Maison Commune");
+        // Depuis les roles d'equipe, traiter le dossier d'un collegue
+        // demande d'etre proprietaire : la meme maison ne suffit plus.
+        await _api.DansLaBase(async db =>
+        {
+            var u = await db.Users.FindAsync(une.Id);
+            u!.RoleEquipe = RolesEquipe.Proprietaire;
+            return await db.SaveChangesAsync();
+        });
         var candidat = await _api.Compte("ag-equipe-c", "Candidate");
         var dossier = await Candidature(await _api.Offre(autre.Id), candidat.Id);
 

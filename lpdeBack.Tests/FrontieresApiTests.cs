@@ -86,17 +86,40 @@ public class FrontieresApiTests
     }
 
     [Fact]
-    public async Task Un_collegue_de_la_meme_entreprise_gere_l_offre()
+    public async Task Un_proprietaire_gere_l_offre_de_son_equipe()
     {
+        // C'est tout l'objet du perimetre : un recruteur qui part ne doit
+        // pas emporter les offres de l'entreprise avec lui.
+        //
+        // Depuis les roles d'equipe, la meme entreprise ne suffit plus : il
+        // faut en etre proprietaire. Un membre voit tout et n'ecrit que sur
+        // le sien — sans quoi un nouvel arrivant avait le catalogue entier
+        // a sa main des sa premiere connexion.
         var auteur = await _api.Compte("perim-auteur", "Recruiter", entreprise: "MemeBoite");
         var collegue = await _api.Compte("perim-collegue", "Recruiter", entreprise: "MemeBoite");
+        await _api.DansLaBase(async db =>
+        {
+            var c = await db.Users.FindAsync(collegue.Id);
+            c!.RoleEquipe = lpdeBack.Models.RolesEquipe.Proprietaire;
+            return await db.SaveChangesAsync();
+        });
         var offre = await _api.Offre(auteur.Id);
 
         var reponse = await _api.ClientPour(collegue).PatchAsync($"/api/joboffers/{offre}/feature", null);
 
-        // C'est tout l'objet du perimetre : un recruteur qui part ne doit
-        // pas emporter les offres de l'entreprise avec lui.
         Assert.Equal(HttpStatusCode.OK, reponse.StatusCode);
+    }
+
+    [Fact]
+    public async Task Un_simple_membre_ne_gere_pas_l_offre_d_un_collegue()
+    {
+        var auteur = await _api.Compte("perim-auteur2", "Recruiter", entreprise: "AutreBoite");
+        var membre = await _api.Compte("perim-membre", "Recruiter", entreprise: "AutreBoite");
+        var offre = await _api.Offre(auteur.Id);
+
+        var reponse = await _api.ClientPour(membre).PatchAsync($"/api/joboffers/{offre}/feature", null);
+
+        Assert.Equal(HttpStatusCode.Forbidden, reponse.StatusCode);
     }
 
     [Fact]

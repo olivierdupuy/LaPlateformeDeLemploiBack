@@ -52,6 +52,24 @@ public class AppUser : IdentityUser
     public bool IsActive { get; set; } = true;
 
     /// <summary>Le candidat accepte d'apparaitre dans le vivier / d'etre trouve par les recruteurs.</summary>
+    /// <summary>
+    /// Le role au sein de l'equipe de recrutement : « proprietaire » ou
+    /// « membre ». Sans objet pour un candidat.
+    ///
+    /// Le partage etait binaire : tout membre d'une meme entreprise
+    /// pouvait modifier, suspendre et supprimer les offres de tous les
+    /// autres. Cela convient a deux associes, pas a une equipe de dix ou
+    /// un cabinet qui recrute pour ses clients — il suffisait d'un
+    /// nouvel arrivant pour que le catalogue entier soit a sa main.
+    ///
+    /// Un membre gere ses propres offres et LIT celles de l'equipe : la
+    /// visibilite partagee est ce qui fait l'interet du travail a
+    /// plusieurs, et elle ne change pas. C'est l'ecriture qui se
+    /// restreint.
+    /// </summary>
+    [MaxLength(20)]
+    public string RoleEquipe { get; set; } = RolesEquipe.Membre;
+
     public bool IsSearchable { get; set; } = true;
 
     /// <summary>
