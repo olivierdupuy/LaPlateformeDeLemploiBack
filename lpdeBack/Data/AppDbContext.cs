@@ -38,6 +38,9 @@ public class AppDbContext : IdentityDbContext<AppUser>
     // ── Espace candidat ──
     public DbSet<PreferencesEmploi> PreferencesEmploi => Set<PreferencesEmploi>();
 
+    // ── Espace recruteur ──
+    public DbSet<EtiquetteOffre> EtiquettesOffre => Set<EtiquetteOffre>();
+
     // ── Exploitation ──
     public DbSet<ErreurNavigateur> ErreursNavigateur => Set<ErreurNavigateur>();
 
@@ -139,6 +142,18 @@ public class AppDbContext : IdentityDbContext<AppUser>
         // meme candidat rendraient la correspondance dependante de l'ordre
         // de lecture.
         modelBuilder.Entity<PreferencesEmploi>(e => e.HasIndex(x => x.UserId).IsUnique());
+
+        modelBuilder.Entity<EtiquetteOffre>(e =>
+        {
+            // Deux fois le meme mot sur une meme offre n'apporte rien et
+            // fait compter double au filtrage. L'unicite porte sur la
+            // forme repliee : « Urgent » et « urgent » sont la meme.
+            e.HasIndex(x => new { x.JobOfferId, x.Cle }).IsUnique();
+            e.HasIndex(x => x.Cle);
+            // L'etiquette n'a de sens que sur son offre : l'offre partie,
+            // elle n'a plus rien a designer.
+            e.HasOne(x => x.JobOffer).WithMany().HasForeignKey(x => x.JobOfferId).OnDelete(DeleteBehavior.Cascade);
+        });
 
         modelBuilder.Entity<Abonnement>(e =>
         {

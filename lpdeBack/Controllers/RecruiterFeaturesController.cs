@@ -246,6 +246,105 @@ public class RecruiterFeaturesController : ControllerBase
     }
 
     // ═══════════════════════════════════
+    //  4 bis. ETIQUETTES SUR LES OFFRES
+    // ═══════════════════════════════════
+
+    /// <summary>
+    /// Les etiquettes de toutes les offres que l'appelant peut gerer.
+    ///
+    /// Rendues a part et non dans la charge utile des offres : le point
+    /// d'entree public rend l'entite « JobOffer » entiere, et une
+    /// etiquette interne — « priorite direction », « a revoir » — n'a rien
+    /// a faire chez un visiteur du catalogue. La separation n'est pas une
+    /// commodite, c'est ce qui empeche la fuite.
+    ///
+    /// « vocabulaire » sert a proposer les mots deja employes : sans lui,
+    /// une equipe se retrouve avec « campagne ete », « Campagne Été » et
+    /// « campagne-ete » pour la meme chose.
+    /// </summary>
+    [HttpGet("offers/etiquettes")]
+    public async Task<ActionResult<object>> Etiquettes()
+    {
+        var visibles = await OffresGerables();
+
+        var lignes = await _context.EtiquettesOffre.AsNoTracking()
+            .Where(e => visibles.Contains(e.JobOfferId))
+            .OrderBy(e => e.Nom)
+            .Select(e => new { e.JobOfferId, e.Nom, e.Cle })
+            .ToListAsync();
+
+        return Ok(new
+        {
+            parOffre = lignes.GroupBy(l => l.JobOfferId)
+                             .ToDictionary(g => g.Key.ToString(), g => g.Select(x => x.Nom).ToArray()),
+            vocabulaire = lignes.GroupBy(l => l.Cle)
+                                .Select(g => g.First().Nom)
+                                .OrderBy(n => n, StringComparer.CurrentCultureIgnoreCase)
+                                .ToArray(),
+        });
+    }
+
+    /// <summary>
+    /// Remplace les etiquettes d'une offre. La liste envoyee fait foi.
+    ///
+    /// Remplacer plutot qu'ajouter : l'ecran montre la liste entiere et
+    /// l'envoie entiere. Un point d'entree qui ajouterait obligerait a un
+    /// second pour retirer, et les deux se desynchroniseraient au premier
+    /// double clic.
+    /// </summary>
+    [HttpPut("offers/{id}/etiquettes")]
+    public async Task<ActionResult<object>> PoserEtiquettes(int id, EtiquettesDto dto)
+    {
+        var offre = await _context.JobOffers.FindAsync(id);
+        if (offre == null) return NotFound();
+        if (!IsAdmin() && !await _perimetre.PeutGerer(UserId(), offre.CreatedByUserId)) return Forbid();
+
+        // Replier avant de dedoublonner : « Urgent » et « urgent » ne
+        // doivent pas passer tous les deux, sans quoi le filtre en perdrait
+        // la moitie.
+        var voulues = (dto.Etiquettes ?? new List<string>())
+            .Select(n => n?.Trim() ?? "")
+            .Where(n => n.Length > 0)
+            .GroupBy(EtiquetteOffre.Replier)
+            .Select(g => g.First())
+            .Take(EtiquettesDto.Maximum)
+            .ToList();
+
+        var existantes = await _context.EtiquettesOffre.Where(e => e.JobOfferId == id).ToListAsync();
+        var clefsVoulues = voulues.Select(EtiquetteOffre.Replier).ToHashSet();
+
+        _context.EtiquettesOffre.RemoveRange(existantes.Where(e => !clefsVoulues.Contains(e.Cle)));
+
+        var clefsPresentes = existantes.Select(e => e.Cle).ToHashSet();
+        foreach (var nom in voulues.Where(n => !clefsPresentes.Contains(EtiquetteOffre.Replier(n))))
+        {
+            _context.EtiquettesOffre.Add(new EtiquetteOffre
+            {
+                JobOfferId = id,
+                Nom = nom,
+                Cle = EtiquetteOffre.Replier(nom),
+                CreeParUserId = UserId(),
+            });
+        }
+
+        await _context.SaveChangesAsync();
+        return Ok(new { id, etiquettes = voulues });
+    }
+
+    /// <summary>Les offres que l'appelant peut gerer, en identifiants.</summary>
+    private async Task<List<int>> OffresGerables()
+    {
+        if (IsAdmin())
+            return await _context.JobOffers.Select(o => o.Id).ToListAsync();
+
+        var equipe = await _perimetre.Equipe(UserId());
+        return await _context.JobOffers
+            .Where(o => o.CreatedByUserId != null && equipe.Contains(o.CreatedByUserId))
+            .Select(o => o.Id)
+            .ToListAsync();
+    }
+
+    // ═══════════════════════════════════
     //  5. ACTIONS GROUPEES
     // ═══════════════════════════════════
 
@@ -341,6 +440,18 @@ public class TemplateDto
 
     [Longueur(Limites.Nom), SansBalisage]
     public string? Category { get; set; }
+}
+
+public class EtiquettesDto
+{
+    /// <summary>
+    /// Huit suffit largement, et la borne evite qu'un collage maladroit
+    /// pose deux cents mots sur une offre.
+    /// </summary>
+    public const int Maximum = 8;
+
+    [MaxLength(Maximum, ErrorMessage = "Huit étiquettes au maximum par offre.")]
+    public List<string>? Etiquettes { get; set; }
 }
 
 public class BulkEtatOffreDto
