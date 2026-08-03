@@ -42,6 +42,7 @@ public class AppDbContext : IdentityDbContext<AppUser>
     // ── Espace recruteur ──
     public DbSet<EtiquetteOffre> EtiquettesOffre => Set<EtiquetteOffre>();
     public DbSet<Invitation> Invitations => Set<Invitation>();
+    public DbSet<NoteCandidature> NotesCandidature => Set<NoteCandidature>();
 
     // ── Exploitation ──
     public DbSet<ErreurNavigateur> ErreursNavigateur => Set<ErreurNavigateur>();
@@ -144,6 +145,12 @@ public class AppDbContext : IdentityDbContext<AppUser>
         // meme candidat rendraient la correspondance dependante de l'ordre
         // de lecture.
         modelBuilder.Entity<PreferencesEmploi>(e => e.HasIndex(x => x.UserId).IsUnique());
+
+        modelBuilder.Entity<NoteCandidature>(e =>
+        {
+            e.HasIndex(x => x.ApplicationId);
+            e.HasOne(x => x.Application).WithMany().HasForeignKey(x => x.ApplicationId).OnDelete(DeleteBehavior.Cascade);
+        });
 
         modelBuilder.Entity<Invitation>(e =>
         {

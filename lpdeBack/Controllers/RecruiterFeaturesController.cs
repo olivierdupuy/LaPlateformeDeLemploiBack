@@ -273,6 +273,75 @@ public class RecruiterFeaturesController : ControllerBase
     }
 
     // ═══════════════════════════════════
+    //  2 quater. NOTES D'EQUIPE SUR UNE CANDIDATURE
+    // ═══════════════════════════════════
+
+    /// <summary>
+    /// Les notes laissees par l'equipe sur une candidature.
+    ///
+    /// « RecruiterNotes » existait deja, mais c'est un champ unique : le
+    /// second qui ecrit efface le premier, sans que ni l'un ni l'autre ne
+    /// s'en apercoive. Celles-ci s'empilent et portent leur auteur.
+    ///
+    /// Elles ne sortent jamais cote candidat — meme regle que l'ancien
+    /// champ, que le suivi de candidature exclut explicitement.
+    /// </summary>
+    [HttpGet("applications/{id:int}/notes")]
+    public async Task<ActionResult<IEnumerable<object>>> NotesEquipe(int id)
+    {
+        var app = await _context.Applications.Include(a => a.JobOffer)
+            .FirstOrDefaultAsync(a => a.Id == id);
+        if (app == null) return NotFound();
+        if (!IsAdmin() && !await _perimetre.PeutGerer(UserId(), app.JobOffer.CreatedByUserId)) return Forbid();
+
+        return await _context.NotesCandidature.AsNoTracking()
+            .Where(n => n.ApplicationId == id)
+            .OrderBy(n => n.CreeLe)
+            .Select(n => new { n.Id, n.AuteurNom, n.Contenu, n.CreeLe, aMoi = n.AuteurId == UserId() })
+            .ToListAsync();
+    }
+
+    [HttpPost("applications/{id:int}/notes")]
+    public async Task<ActionResult<object>> AjouterNote(int id, NoteEquipeDto dto)
+    {
+        var app = await _context.Applications.Include(a => a.JobOffer)
+            .FirstOrDefaultAsync(a => a.Id == id);
+        if (app == null) return NotFound();
+        if (!IsAdmin() && !await _perimetre.PeutGerer(UserId(), app.JobOffer.CreatedByUserId)) return Forbid();
+
+        var moi = await _context.Users.FindAsync(UserId());
+
+        var note = new NoteCandidature
+        {
+            ApplicationId = id,
+            AuteurId = UserId(),
+            // Le nom est fige a l'ecriture : un depart d'equipe ne doit pas
+            // rendre anonymes des mois de notes.
+            AuteurNom = moi == null ? "Un membre de l'équipe" : $"{moi.FirstName} {moi.LastName}".Trim(),
+            Contenu = dto.Contenu.Trim(),
+        };
+
+        _context.NotesCandidature.Add(note);
+        await _context.SaveChangesAsync();
+
+        return Ok(new { note.Id, note.AuteurNom, note.Contenu, note.CreeLe, aMoi = true });
+    }
+
+    /// <summary>Retirer sa propre note. On ne retire pas celle d'un collegue.</summary>
+    [HttpDelete("applications/{id:int}/notes/{noteId:int}")]
+    public async Task<IActionResult> RetirerNote(int id, int noteId)
+    {
+        var note = await _context.NotesCandidature.FirstOrDefaultAsync(n => n.Id == noteId && n.ApplicationId == id);
+        if (note == null) return NotFound();
+        if (!IsAdmin() && note.AuteurId != UserId())
+            return Forbid();
+
+        _context.NotesCandidature.Remove(note);
+        await _context.SaveChangesAsync();
+        return NoContent();
+    }
+
+    // ═══════════════════════════════════
     //  2 bis. INVITER UN PROFIL A POSTULER
     // ═══════════════════════════════════
 
@@ -552,6 +621,14 @@ public class TemplateDto
 
     [Longueur(Limites.Nom), SansBalisage]
     public string? Category { get; set; }
+}
+
+public class NoteEquipeDto
+{
+    [Required(ErrorMessage = "Écrivez votre note.")]
+    [StringLength(2000, MinimumLength = 1, ErrorMessage = "Deux mille caractères au maximum.")]
+    [SansBalisage]
+    public string Contenu { get; set; } = string.Empty;
 }
 
 public class InvitationDto
