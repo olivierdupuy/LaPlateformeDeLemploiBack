@@ -1,3 +1,7 @@
 <Solution>
   <Project Path="lpdeBack/lpdeBack.csproj" />
+  <!-- Sans cette ligne, « dotnet test » sur la solution ne trouvait aucun
+       projet de test et sortait en code 0 : une integration continue reglee
+       sur la solution etait verte sans avoir rien execute. -->
+  <Project Path="lpdeBack.Tests/lpdeBack.Tests.csproj" />
 </Solution>

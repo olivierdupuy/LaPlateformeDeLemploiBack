@@ -17,6 +17,7 @@ public class AppDbContext : IdentityDbContext<AppUser>
     public DbSet<CvSection> CvSections => Set<CvSection>();
     public DbSet<PushToken> PushTokens { get; set; }
     public DbSet<JobNote> JobNotes => Set<JobNote>();
+    public DbSet<Favori> Favoris => Set<Favori>();
     public DbSet<MessageTemplate> MessageTemplates => Set<MessageTemplate>();
     public DbSet<ActivityLog> ActivityLogs => Set<ActivityLog>();
     public DbSet<PlatformSetting> PlatformSettings => Set<PlatformSetting>();
@@ -33,6 +34,9 @@ public class AppDbContext : IdentityDbContext<AppUser>
     public DbSet<NewsletterSubscriber> NewsletterSubscribers => Set<NewsletterSubscriber>();
     public DbSet<NewsletterCampaign> NewsletterCampaigns => Set<NewsletterCampaign>();
     public DbSet<NewsletterDelivery> NewsletterDeliveries => Set<NewsletterDelivery>();
+
+    // ── Espace candidat ──
+    public DbSet<PreferencesEmploi> PreferencesEmploi => Set<PreferencesEmploi>();
 
     // ── Exploitation ──
     public DbSet<ErreurNavigateur> ErreursNavigateur => Set<ErreurNavigateur>();
@@ -129,6 +133,12 @@ public class AppDbContext : IdentityDbContext<AppUser>
         });
 
         modelBuilder.Entity<RetourCourriel>(e => e.HasIndex(x => x.Email).IsUnique());
+
+        // Un jeu de preferences par compte, et l'unicite le dit plutot que
+        // de compter sur la discipline du controleur : deux lignes pour un
+        // meme candidat rendraient la correspondance dependante de l'ordre
+        // de lecture.
+        modelBuilder.Entity<PreferencesEmploi>(e => e.HasIndex(x => x.UserId).IsUnique());
 
         modelBuilder.Entity<Abonnement>(e =>
         {
@@ -239,6 +249,18 @@ public class AppDbContext : IdentityDbContext<AppUser>
             entity.HasOne(n => n.User).WithMany().HasForeignKey(n => n.UserId).OnDelete(DeleteBehavior.Cascade);
             entity.HasOne(n => n.JobOffer).WithMany().HasForeignKey(n => n.JobOfferId).OnDelete(DeleteBehavior.Cascade);
             entity.HasIndex(n => new { n.UserId, n.JobOfferId }).IsUnique();
+        });
+
+        modelBuilder.Entity<Favori>(entity =>
+        {
+            entity.HasOne(f => f.User).WithMany().HasForeignKey(f => f.UserId).OnDelete(DeleteBehavior.Cascade);
+            // L'offre effacee emporte le favori : garder un signet vers une
+            // offre disparue ne rendrait service a personne, et obligerait
+            // chaque lecture a filtrer les orphelins.
+            entity.HasOne(f => f.JobOffer).WithMany().HasForeignKey(f => f.JobOfferId).OnDelete(DeleteBehavior.Cascade);
+            // Mettre deux fois la meme offre de cote n'a pas de sens : la
+            // contrainte le dit a la base plutot qu'a chaque appelant.
+            entity.HasIndex(f => new { f.UserId, f.JobOfferId }).IsUnique();
         });
 
         modelBuilder.Entity<ActivityLog>(entity =>

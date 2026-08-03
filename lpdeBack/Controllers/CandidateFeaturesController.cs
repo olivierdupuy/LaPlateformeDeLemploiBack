@@ -174,6 +174,7 @@ public class CandidateFeaturesController : ControllerBase
             .FirstOrDefaultAsync(j => j.Id == jobOfferId, ct);
         if (offre == null) return NotFound();
 
+        var declarees = await AUneDeclaration();
         var note = Correspondance.Noter(user, offre, await Souhaits());
 
         // Rien de connu sur le candidat : mieux vaut n'afficher aucune
@@ -197,19 +198,132 @@ public class CandidateFeaturesController : ControllerBase
             // L'interface doit pouvoir distinguer une phrase generee d'un
             // critere calcule : les deux n'engagent pas de la meme facon.
             assiste = resume is not null,
+            // D'ou viennent les souhaits qui ont pese dans ce score. Un
+            // candidat qui ne reconnait pas son resultat doit pouvoir
+            // remonter a ce qui l'a produit — et le corriger. Rendu ici
+            // plutot que par un second appel : la page en ferait un de plus
+            // sur chaque fiche d'offre, pour un seul mot.
+            origineSouhaits = declarees ? "declarees" : "deduites",
         });
+    }
+
+    // ═══════════════════════════════════
+    //  2 bis. PREFERENCES D'EMPLOI
+    // ═══════════════════════════════════
+
+    public sealed class PreferencesDto
+    {
+        [Range(0, 1_000_000, ErrorMessage = "Salaire annuel hors limites.")]
+        public int? SalaireAnnuelMinimum { get; set; }
+
+        [MaxLength(40)]
+        public string? Contrat { get; set; }
+
+        public bool? Distanciel { get; set; }
+
+        [Range(1, 300, ErrorMessage = "Le rayon doit tenir entre 1 et 300 km.")]
+        public int? RayonKm { get; set; }
+    }
+
+    /// <summary>
+    /// Ce que le candidat a declare chercher, et d'ou cela vient.
+    ///
+    /// « origine » n'est pas decoratif : l'interface doit pouvoir dire au
+    /// candidat que sa correspondance repose sur une recherche qu'il a
+    /// enregistree un soir, et non sur un choix. C'est la difference entre
+    /// un resultat qu'on comprend et un resultat qu'on subit.
+    /// </summary>
+    [HttpGet("preferences")]
+    public async Task<ActionResult<object>> GetPreferences()
+    {
+        var p = await _context.PreferencesEmploi.AsNoTracking()
+            .FirstOrDefaultAsync(x => x.UserId == UserId());
+
+        var declarees = p is not null && !p.EstVide;
+        var effectifs = await Souhaits();
+
+        return Ok(new
+        {
+            declarees,
+            origine = declarees ? "declarees" : "deduites",
+            salaireAnnuelMinimum = p?.SalaireAnnuelMinimum,
+            contrat = p?.Contrat,
+            distanciel = p?.Distanciel,
+            rayonKm = p?.RayonKm,
+            misAJourLe = p?.MisAJourLe,
+            // Ce qui sert reellement au calcul aujourd'hui, declare ou
+            // deduit : sans cela l'ecran ne peut pas expliquer un score.
+            effectifs = new
+            {
+                salaireAnnuelMinimum = effectifs.SalaireAnnuelMinimum,
+                contrat = effectifs.Contrat,
+                distanciel = effectifs.Distanciel,
+                rayonKm = effectifs.RayonKm,
+            },
+        });
+    }
+
+    /// <summary>Enregistrer ses preferences. Un champ nul veut dire « indifferent ».</summary>
+    [HttpPut("preferences")]
+    public async Task<ActionResult<object>> PutPreferences(PreferencesDto dto)
+    {
+        var p = await _context.PreferencesEmploi.FirstOrDefaultAsync(x => x.UserId == UserId());
+        if (p is null)
+        {
+            p = new PreferencesEmploi { UserId = UserId() };
+            _context.PreferencesEmploi.Add(p);
+        }
+
+        p.SalaireAnnuelMinimum = dto.SalaireAnnuelMinimum;
+        // Une chaine vide venue d'un « select » vaut « indifferent », pas
+        // un contrat nomme « ». Sans cela le moteur chercherait des offres
+        // dont le type de contrat est la chaine vide, et n'en trouverait
+        // aucune : le candidat verrait tous ses scores s'effondrer.
+        p.Contrat = string.IsNullOrWhiteSpace(dto.Contrat) ? null : dto.Contrat.Trim();
+        p.Distanciel = dto.Distanciel;
+        p.RayonKm = dto.RayonKm;
+        p.MisAJourLe = DateTime.UtcNow;
+
+        await _context.SaveChangesAsync();
+        return await GetPreferences();
     }
 
     /// <summary>
     /// Ce que le candidat cherche, et que sa fiche ne dit pas.
     ///
-    /// Le type de contrat vise et l'envie de teletravail ne sont nulle
-    /// part dans « AppUser ». Ils sont en revanche dans la derniere
-    /// recherche que le candidat a pris la peine d'enregistrer, ce qui est
-    /// une declaration d'intention aussi explicite qu'un champ de profil.
+    /// Les preferences declarees font foi. A defaut — et c'est encore le
+    /// cas de la plupart des comptes — on retombe sur la derniere
+    /// recherche enregistree : une recherche qu'on prend la peine de
+    /// garder est une declaration d'intention, et c'est mieux que rien.
+    ///
+    /// Le repli ne se declenche que sur des preferences absentes ou
+    /// entierement vides. Un candidat qui a ouvert le formulaire pour n'y
+    /// mettre qu'un salaire plancher a dit quelque chose : lui ajouter par
+    /// deduction un contrat qu'il n'a pas choisi reviendrait a inventer.
     /// </summary>
     private async Task<Souhaits> Souhaits()
     {
+        var p = await _context.PreferencesEmploi.AsNoTracking()
+            .FirstOrDefaultAsync(x => x.UserId == UserId());
+
+        if (p is not null && !p.EstVide)
+            return new Souhaits(p.Contrat, p.Distanciel, p.SalaireAnnuelMinimum, p.RayonKm);
+
+        return await Deduits();
+    }
+
+    /// <summary>Le candidat a-t-il renseigne au moins un critere ?</summary>
+    private async Task<bool> AUneDeclaration()
+    {
+        var p = await _context.PreferencesEmploi.AsNoTracking()
+            .FirstOrDefaultAsync(x => x.UserId == UserId());
+        return p is not null && !p.EstVide;
+    }
+
+    /// <summary>Le repli : ce que la derniere recherche enregistree laisse deviner.</summary>
+    private async Task<Souhaits> Deduits()
+    {
+
         var derniere = await _context.SavedSearches
             .AsNoTracking()
             .Where(r => r.UserId == UserId())
