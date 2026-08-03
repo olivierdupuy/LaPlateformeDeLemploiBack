@@ -420,6 +420,10 @@ public class AuthController : ControllerBase
         if (dto.LinkedInUrl != null) user.LinkedInUrl = dto.LinkedInUrl;
         if (dto.PortfolioUrl != null) user.PortfolioUrl = dto.PortfolioUrl;
         if (dto.IsSearchable.HasValue) user.IsSearchable = dto.IsSearchable.Value;
+        // Une date nulle veut dire « je ne le dis pas », ce qui n'est pas
+        // « je ne suis pas disponible » : le vivier ne juge personne
+        // la-dessus, il ne fait que trier.
+        if (dto.DisponibleLeFourni) user.DisponibleLe = dto.DisponibleLe;
 
         await _userManager.UpdateAsync(user);
         return Ok(MapToUserDto(user));
@@ -846,6 +850,7 @@ public class AuthController : ControllerBase
         LinkedInUrl = user.LinkedInUrl,
         PortfolioUrl = user.PortfolioUrl,
         IsSearchable = user.IsSearchable,
+        DisponibleLe = user.DisponibleLe,
         CreatedAt = user.CreatedAt,
         EmailConfirmed = user.EmailConfirmed,
         TwoFactorEnabled = user.TwoFactorEnabled,

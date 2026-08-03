@@ -104,9 +104,18 @@ public class RecruiterFeaturesController : ControllerBase
         [FromQuery] int? minExperience,
         [FromQuery] int? maxExperience,
         [FromQuery] string? education,
+        [FromQuery] bool? disponible,
         [FromQuery] string? sort)
     {
-        var query = _context.Users.Where(u => u.Role == "Candidate" && u.IsActive).AsQueryable();
+        // « IsSearchable » manquait a cette condition. Le profil promet
+        // « Vous n'apparaissez dans aucune recherche de candidats », et
+        // ce point d'entree-ci l'ignorait — l'autre vivier, celui de
+        // « CandidatesController », le respectait depuis toujours. Un
+        // candidat qui s'etait masque restait donc visible d'un ecran sur
+        // deux, sans qu'aucune erreur ne le signale.
+        var query = _context.Users
+            .Where(u => u.Role == "Candidate" && u.IsActive && u.IsSearchable)
+            .AsQueryable();
 
         if (!string.IsNullOrWhiteSpace(search))
             query = query.Where(u => u.FirstName.Contains(search) || u.LastName.Contains(search) || (u.Bio != null && u.Bio.Contains(search)) || (u.Title != null && u.Title.Contains(search)));
@@ -130,8 +139,18 @@ public class RecruiterFeaturesController : ControllerBase
                 query = query.Where(u => u.Skills != null && u.Skills.Contains(skill));
         }
 
+        // Disponible aujourd'hui : la date est passee ou c'est aujourd'hui.
+        // Un candidat qui n'a rien declare n'est pas « indisponible » — il
+        // n'a rien dit, et le filtre l'ecarte sans le juger.
+        var aujourdhui = DateTime.UtcNow.Date;
+        if (disponible == true)
+            query = query.Where(u => u.DisponibleLe != null && u.DisponibleLe <= aujourdhui);
+
         query = sort switch
         {
+            // Les disponibles d'abord, du plus tot au plus tard ; ceux qui
+            // n'ont rien dit ferment la liste plutot que de la fausser.
+            "disponibilite" => query.OrderBy(u => u.DisponibleLe == null ? 1 : 0).ThenBy(u => u.DisponibleLe),
             "experience_desc" => query.OrderByDescending(u => u.ExperienceYears ?? 0),
             "experience_asc" => query.OrderBy(u => u.ExperienceYears ?? 0),
             "name" => query.OrderBy(u => u.LastName),
@@ -139,17 +158,25 @@ public class RecruiterFeaturesController : ControllerBase
         };
 
         var candidates = await query.Take(100).ToListAsync();
-        var result = new List<object>();
-        foreach (var c in candidates)
+
+        // Un compte de candidatures par profil, c'etait cent requetes pour
+        // une page. Un seul regroupement les remplace.
+        var ids = candidates.Select(c => c.Id).ToList();
+        var comptes = await _context.Applications
+            .Where(a => a.UserId != null && ids.Contains(a.UserId))
+            .GroupBy(a => a.UserId!)
+            .Select(g => new { UserId = g.Key, N = g.Count() })
+            .ToDictionaryAsync(x => x.UserId, x => x.N);
+
+        var result = candidates.Select(c => new
         {
-            var appCount = await _context.Applications.CountAsync(a => a.UserId == c.Id);
-            result.Add(new
-            {
-                c.Id, c.FirstName, c.LastName, c.AvatarUrl, c.Title, c.Skills,
-                c.ExperienceYears, c.Education, c.City, c.Bio, c.CreatedAt,
-                applicationCount = appCount,
-            });
-        }
+            c.Id, c.FirstName, c.LastName, c.AvatarUrl, c.Title, c.Skills,
+            c.ExperienceYears, c.Education, c.City, c.Bio, c.CreatedAt,
+            applicationCount = comptes.GetValueOrDefault(c.Id),
+            c.DisponibleLe,
+            disponibleMaintenant = c.DisponibleLe != null && c.DisponibleLe <= aujourdhui,
+        }).ToList();
+
         return Ok(result);
     }
 

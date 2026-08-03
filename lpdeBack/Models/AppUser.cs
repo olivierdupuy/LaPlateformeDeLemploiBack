@@ -54,6 +54,17 @@ public class AppUser : IdentityUser
     /// <summary>Le candidat accepte d'apparaitre dans le vivier / d'etre trouve par les recruteurs.</summary>
     public bool IsSearchable { get; set; } = true;
 
+    /// <summary>
+    /// A partir de quand le candidat peut prendre un poste. Nul s'il ne
+    /// l'a pas dit.
+    ///
+    /// Une date et non un booleen : « disponible immediatement » se perime
+    /// tout seul, et un boolean pose il y a huit mois ment sans que
+    /// personne ne s'en apercoive. Une date, elle, reste vraie — « a
+    /// partir du 1er septembre » se lit encore correctement en octobre.
+    /// </summary>
+    public DateTime? DisponibleLe { get; set; }
+
     // ══ Securite ══
     // IdentityUser porte deja TwoFactorEnabled, EmailConfirmed, LockoutEnd,
     // AccessFailedCount et SecurityStamp. Ce qui manque, ce sont les dates :

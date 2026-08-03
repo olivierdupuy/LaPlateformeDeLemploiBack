@@ -92,6 +92,19 @@ public class UpdateProfileDto
     public string? PortfolioUrl { get; set; }
 
     public bool? IsSearchable { get; set; }
+
+    /// <summary>
+    /// A partir de quand le candidat peut prendre un poste.
+    ///
+    /// « DisponibleLeFourni » distingue « je n'y touche pas » de « je
+    /// l'efface ». Sans ce second champ, un formulaire qui n'envoie pas la
+    /// date — n'importe quel ecran qui ne la porte pas — l'effacerait a
+    /// chaque enregistrement, et personne ne comprendrait pourquoi sa
+    /// disponibilite disparait en changeant sa photo.
+    /// </summary>
+    public DateTime? DisponibleLe { get; set; }
+
+    public bool DisponibleLeFourni { get; set; }
 }
 
 public class GoogleSignInDto
@@ -160,6 +173,8 @@ public class UserDto
     public string? LinkedInUrl { get; set; }
     public string? PortfolioUrl { get; set; }
     public bool IsSearchable { get; set; }
+
+    public DateTime? DisponibleLe { get; set; }
     public DateTime CreatedAt { get; set; }
     public bool IsOnline { get; set; }
 
