@@ -751,6 +751,18 @@ public class ApplicationsController : ControllerBase
                 string.IsNullOrWhiteSpace(job.ScreeningQuestions) ? null : app.QualificationScore),
                 "nouvelle candidature");
 
+        // Postuler solde l'invitation, s'il y en avait une : sans cela le
+        // recruteur verrait « invitation sans reponse » a cote de la
+        // candidature qu'elle a justement produite.
+        var invitation = await _context.Invitations
+            .FirstOrDefaultAsync(i => i.JobOfferId == app.JobOfferId && i.CandidatId == app.UserId);
+        if (invitation != null && invitation.Reponse == null)
+        {
+            invitation.Reponse = Invitation.Postule;
+            invitation.ReponduLe = DateTime.UtcNow;
+            await _context.SaveChangesAsync();
+        }
+
         return CreatedAtAction(nameof(GetById), new { id = app.Id }, app);
     }
 }

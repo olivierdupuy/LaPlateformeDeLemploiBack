@@ -41,6 +41,7 @@ public class AppDbContext : IdentityDbContext<AppUser>
 
     // ── Espace recruteur ──
     public DbSet<EtiquetteOffre> EtiquettesOffre => Set<EtiquetteOffre>();
+    public DbSet<Invitation> Invitations => Set<Invitation>();
 
     // ── Exploitation ──
     public DbSet<ErreurNavigateur> ErreursNavigateur => Set<ErreurNavigateur>();
@@ -143,6 +144,17 @@ public class AppDbContext : IdentityDbContext<AppUser>
         // meme candidat rendraient la correspondance dependante de l'ordre
         // de lecture.
         modelBuilder.Entity<PreferencesEmploi>(e => e.HasIndex(x => x.UserId).IsUnique());
+
+        modelBuilder.Entity<Invitation>(e =>
+        {
+            // Une invitation par offre et par candidat : reinviter
+            // quelqu'un sur la meme annonce est du harcelement poli, pas
+            // une relance. L'unicite le rend impossible plutot que de
+            // compter sur la discipline de l'ecran.
+            e.HasIndex(x => new { x.JobOfferId, x.CandidatId }).IsUnique();
+            e.HasIndex(x => x.CandidatId);
+            e.HasOne(x => x.JobOffer).WithMany().HasForeignKey(x => x.JobOfferId).OnDelete(DeleteBehavior.Cascade);
+        });
 
         modelBuilder.Entity<OffreEcartee>(e =>
         {

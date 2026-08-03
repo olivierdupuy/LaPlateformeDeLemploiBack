@@ -273,6 +273,91 @@ public class RecruiterFeaturesController : ControllerBase
     }
 
     // ═══════════════════════════════════
+    //  2 bis. INVITER UN PROFIL A POSTULER
+    // ═══════════════════════════════════
+
+    /// <summary>
+    /// Inviter un candidat du vivier a postuler sur une de ses offres.
+    ///
+    /// Le vivier permettait de trouver quelqu'un et de le regarder. Pour
+    /// lui parler, il fallait passer par la messagerie, hors de toute
+    /// offre : le candidat recevait « votre profil m'interesse » sans
+    /// savoir pour quel poste.
+    ///
+    /// L'invitation reste une proposition. Le candidat garde la main, et
+    /// son silence n'est pas compte comme un refus.
+    /// </summary>
+    [HttpPost("invitations")]
+    public async Task<ActionResult<object>> Inviter(InvitationDto dto)
+    {
+        var offre = await _context.JobOffers.FindAsync(dto.JobOfferId);
+        if (offre == null) return NotFound(new { message = "Offre introuvable." });
+        if (!IsAdmin() && !await _perimetre.PeutGerer(UserId(), offre.CreatedByUserId)) return Forbid();
+
+        // Inviter sur une annonce que le public ne voit pas enverrait le
+        // candidat vers une page vide.
+        if (!offre.IsActive || offre.IsDraft || offre.ModerationStatus != "Approved")
+            return BadRequest(new { message = "Cette offre n'est pas en ligne." });
+
+        var candidat = await _context.Users.FirstOrDefaultAsync(u => u.Id == dto.CandidatId);
+        if (candidat == null || candidat.Role != "Candidate")
+            return NotFound(new { message = "Candidat introuvable." });
+
+        // Le vivier respecte « IsSearchable » ; l'invitation doit le
+        // respecter aussi, sans quoi un identifiant devine suffirait a
+        // contourner le masquage.
+        if (!candidat.IsSearchable || !candidat.IsActive)
+            return BadRequest(new { message = "Ce profil n'est pas visible des recruteurs." });
+
+        if (await _context.Applications.AnyAsync(a => a.JobOfferId == dto.JobOfferId && a.UserId == dto.CandidatId))
+            return BadRequest(new { message = "Cette personne a déjà postulé à cette offre." });
+
+        if (await _context.Invitations.AnyAsync(i => i.JobOfferId == dto.JobOfferId && i.CandidatId == dto.CandidatId))
+            return BadRequest(new { message = "Cette personne a déjà été invitée sur cette offre." });
+
+        var invitation = new Invitation
+        {
+            JobOfferId = dto.JobOfferId,
+            CandidatId = dto.CandidatId,
+            RecruteurId = UserId(),
+            Message = string.IsNullOrWhiteSpace(dto.Message) ? null : dto.Message.Trim(),
+        };
+        _context.Invitations.Add(invitation);
+
+        _context.Notifications.Add(new Notification
+        {
+            UserId = dto.CandidatId,
+            Title = "Une entreprise vous invite à postuler",
+            Message = $"{offre.Company} vous propose de postuler au poste de « {offre.Title} ».",
+            Link = "/suivi?onglet=invitations",
+            Type = "Invitation",
+        });
+
+        await _context.SaveChangesAsync();
+        return Ok(new { invitation.Id, invitation.EnvoyeeLe });
+    }
+
+    /// <summary>Les invitations envoyees par l'equipe, et ce qu'elles sont devenues.</summary>
+    [HttpGet("invitations")]
+    public async Task<ActionResult<IEnumerable<object>>> InvitationsEnvoyees()
+    {
+        var visibles = await OffresGerables();
+
+        return await _context.Invitations.AsNoTracking()
+            .Where(i => visibles.Contains(i.JobOfferId))
+            .OrderByDescending(i => i.EnvoyeeLe)
+            .Join(_context.Users, i => i.CandidatId, u => u.Id, (i, u) => new
+            {
+                i.Id, i.JobOfferId, i.EnvoyeeLe, i.VueLe, i.Reponse, i.ReponduLe,
+                poste = i.JobOffer.Title,
+                candidat = u.FirstName + " " + u.LastName,
+                candidatId = u.Id,
+            })
+            .Take(200)
+            .ToListAsync();
+    }
+
+    // ═══════════════════════════════════
     //  4 bis. ETIQUETTES SUR LES OFFRES
     // ═══════════════════════════════════
 
@@ -467,6 +552,19 @@ public class TemplateDto
 
     [Longueur(Limites.Nom), SansBalisage]
     public string? Category { get; set; }
+}
+
+public class InvitationDto
+{
+    [Range(1, int.MaxValue, ErrorMessage = "Offre inconnue.")]
+    public int JobOfferId { get; set; }
+
+    [Required(ErrorMessage = "Indiquez le candidat.")]
+    [MaxLength(450)]
+    public string CandidatId { get; set; } = string.Empty;
+
+    [Longueur(1000), SansBalisage]
+    public string? Message { get; set; }
 }
 
 public class EtiquettesDto

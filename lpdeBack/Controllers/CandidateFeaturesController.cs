@@ -306,6 +306,67 @@ public class CandidateFeaturesController : ControllerBase
     }
 
     // ═══════════════════════════════════
+    //  2 bis. INVITATIONS RECUES
+    // ═══════════════════════════════════
+
+    /// <summary>
+    /// Les offres sur lesquelles un recruteur invite ce candidat.
+    ///
+    /// La lecture vaut accuse : le recruteur voit que son invitation a ete
+    /// ouverte, ce qui evite de relancer quelqu'un qui n'a simplement pas
+    /// encore regarde. Le silence, lui, n'est jamais compte comme un
+    /// refus — c'est une proposition, pas une convocation.
+    /// </summary>
+    [HttpGet("invitations")]
+    public async Task<ActionResult<IEnumerable<object>>> Invitations()
+    {
+        var mes = await _context.Invitations
+            .Where(i => i.CandidatId == UserId())
+            .OrderByDescending(i => i.EnvoyeeLe)
+            .ToListAsync();
+
+        var neuves = mes.Where(i => i.VueLe == null).ToList();
+        if (neuves.Count > 0)
+        {
+            foreach (var i in neuves) i.VueLe = DateTime.UtcNow;
+            await _context.SaveChangesAsync();
+        }
+
+        var ids = mes.Select(i => i.JobOfferId).ToList();
+        var offres = await _context.JobOffers.AsNoTracking()
+            .Where(o => ids.Contains(o.Id))
+            .Select(o => new { o.Id, o.Title, o.Company, o.Location, o.ContractType, o.IsActive })
+            .ToDictionaryAsync(o => o.Id);
+
+        return Ok(mes.Select(i => new
+        {
+            i.Id, i.JobOfferId, i.Message, i.EnvoyeeLe, i.Reponse, i.ReponduLe,
+            offre = offres.GetValueOrDefault(i.JobOfferId),
+        }));
+    }
+
+    /// <summary>
+    /// Decliner une invitation.
+    ///
+    /// Le geste existe pour que le candidat puisse solder la proposition
+    /// sans se justifier — et pour que le recruteur cesse d'attendre. Ne
+    /// rien faire reste possible : c'est le comportement par defaut, et il
+    /// ne coute rien a personne.
+    /// </summary>
+    [HttpPatch("invitations/{id:int}/decliner")]
+    public async Task<IActionResult> Decliner(int id)
+    {
+        var invitation = await _context.Invitations.FirstOrDefaultAsync(i => i.Id == id);
+        if (invitation == null) return NotFound();
+        if (invitation.CandidatId != UserId()) return Forbid();
+
+        invitation.Reponse = Invitation.Declinee;
+        invitation.ReponduLe = DateTime.UtcNow;
+        await _context.SaveChangesAsync();
+        return NoContent();
+    }
+
+    // ═══════════════════════════════════
     //  2 ter. OFFRES ECARTEES
     // ═══════════════════════════════════
 
