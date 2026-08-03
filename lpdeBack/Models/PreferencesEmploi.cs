@@ -64,6 +64,21 @@ public class PreferencesEmploi
     /// </summary>
     public int? RayonKm { get; set; }
 
+    /// <summary>
+    /// Les familles de metiers que le candidat ne veut pas voir, separees
+    /// par des virgules — les noms de « LexiqueMetiers.Familles ».
+    ///
+    /// Un filtre negatif persistant vaut mieux qu'une recherche qu'on
+    /// affine a chaque visite : quelqu'un qui ne fera jamais de vente le
+    /// sait une fois pour toutes, et le redire a chaque session est une
+    /// facon de le faire renoncer.
+    ///
+    /// Une chaine et non une table : c'est une liste courte, lue en meme
+    /// temps que le reste des preferences et jamais interrogee seule.
+    /// </summary>
+    [MaxLength(300)]
+    public string? MetiersExclus { get; set; }
+
     public DateTime MisAJourLe { get; set; } = DateTime.UtcNow;
 
     /// <summary>
@@ -72,5 +87,12 @@ public class PreferencesEmploi
     /// pour autant faire taire le repli sur la derniere recherche.
     /// </summary>
     public bool EstVide =>
-        SalaireAnnuelMinimum is null && Contrat is null && Distanciel is null && RayonKm is null;
+        SalaireAnnuelMinimum is null && Contrat is null && Distanciel is null && RayonKm is null
+        && string.IsNullOrWhiteSpace(MetiersExclus);
+
+    /// <summary>Les familles ecartees, en liste.</summary>
+    public IReadOnlyList<string> Exclus() =>
+        string.IsNullOrWhiteSpace(MetiersExclus)
+            ? Array.Empty<string>()
+            : MetiersExclus.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 }

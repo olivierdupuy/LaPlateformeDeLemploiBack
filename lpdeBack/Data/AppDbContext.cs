@@ -37,6 +37,7 @@ public class AppDbContext : IdentityDbContext<AppUser>
 
     // ── Espace candidat ──
     public DbSet<PreferencesEmploi> PreferencesEmploi => Set<PreferencesEmploi>();
+    public DbSet<OffreEcartee> OffresEcartees => Set<OffreEcartee>();
 
     // ── Espace recruteur ──
     public DbSet<EtiquetteOffre> EtiquettesOffre => Set<EtiquetteOffre>();
@@ -142,6 +143,14 @@ public class AppDbContext : IdentityDbContext<AppUser>
         // meme candidat rendraient la correspondance dependante de l'ordre
         // de lecture.
         modelBuilder.Entity<PreferencesEmploi>(e => e.HasIndex(x => x.UserId).IsUnique());
+
+        modelBuilder.Entity<OffreEcartee>(e =>
+        {
+            // Ecarter deux fois la meme offre n'a pas de sens, et la
+            // seconde ligne ferait compter double n'importe quel bilan.
+            e.HasIndex(x => new { x.UserId, x.JobOfferId }).IsUnique();
+            e.HasOne(x => x.JobOffer).WithMany().HasForeignKey(x => x.JobOfferId).OnDelete(DeleteBehavior.Cascade);
+        });
 
         modelBuilder.Entity<EtiquetteOffre>(e =>
         {

@@ -223,6 +223,9 @@ public class CandidateFeaturesController : ControllerBase
 
         [Range(1, 300, ErrorMessage = "Le rayon doit tenir entre 1 et 300 km.")]
         public int? RayonKm { get; set; }
+
+        [MaxLength(12, ErrorMessage = "Douze métiers écartés au maximum.")]
+        public List<string>? MetiersExclus { get; set; }
     }
 
     /// <summary>
@@ -250,7 +253,12 @@ public class CandidateFeaturesController : ControllerBase
             contrat = p?.Contrat,
             distanciel = p?.Distanciel,
             rayonKm = p?.RayonKm,
+            metiersExclus = p?.Exclus() ?? Array.Empty<string>(),
             misAJourLe = p?.MisAJourLe,
+            // Le vocabulaire des familles connues : sans lui l'ecran ne
+            // peut proposer que du texte libre, et deux orthographes de
+            // « restauration » ne filtreraient pas la meme chose.
+            metiersConnus = LexiqueMetiers.Familles,
             // Ce qui sert reellement au calcul aujourd'hui, declare ou
             // deduit : sans cela l'ecran ne peut pas expliquer un score.
             effectifs = new
@@ -282,10 +290,69 @@ public class CandidateFeaturesController : ControllerBase
         p.Contrat = string.IsNullOrWhiteSpace(dto.Contrat) ? null : dto.Contrat.Trim();
         p.Distanciel = dto.Distanciel;
         p.RayonKm = dto.RayonKm;
+        // Seules les familles que le lexique connait sont retenues : un
+        // mot libre ne filtrerait rien, et le candidat croirait avoir
+        // ecarte quelque chose.
+        var exclus = (dto.MetiersExclus ?? new List<string>())
+            .Select(m => m?.Trim() ?? "")
+            .Where(m => m.Length > 0 && LexiqueMetiers.Familles.Contains(m))
+            .Distinct()
+            .ToList();
+        p.MetiersExclus = exclus.Count == 0 ? null : string.Join(",", exclus);
         p.MisAJourLe = DateTime.UtcNow;
 
         await _context.SaveChangesAsync();
         return await GetPreferences();
+    }
+
+    // ═══════════════════════════════════
+    //  2 ter. OFFRES ECARTEES
+    // ═══════════════════════════════════
+
+    /// <summary>Les offres que le candidat a ecartees.</summary>
+    [HttpGet("offres-ecartees")]
+    public async Task<ActionResult<IEnumerable<int>>> OffresEcartees() =>
+        await _context.OffresEcartees.AsNoTracking()
+            .Where(o => o.UserId == UserId())
+            .Select(o => o.JobOfferId)
+            .ToListAsync();
+
+    /// <summary>
+    /// Ecarter une offre de ses resultats.
+    ///
+    /// Rien n'en remonte au recruteur : c'est un geste de confort, pas un
+    /// avis. Le dire ici parce que la tentation d'en faire un signal de
+    /// qualite est reelle, et qu'elle transformerait un bouton anodin en
+    /// jugement porte sur une annonce.
+    /// </summary>
+    [HttpPost("offres-ecartees/{jobOfferId:int}")]
+    public async Task<IActionResult> Ecarter(int jobOfferId)
+    {
+        if (!await _context.JobOffers.AnyAsync(o => o.Id == jobOfferId)) return NotFound();
+
+        var deja = await _context.OffresEcartees
+            .AnyAsync(o => o.UserId == UserId() && o.JobOfferId == jobOfferId);
+        if (!deja)
+        {
+            _context.OffresEcartees.Add(new OffreEcartee { UserId = UserId(), JobOfferId = jobOfferId });
+            await _context.SaveChangesAsync();
+        }
+
+        return NoContent();
+    }
+
+    /// <summary>Revenir sur un ecart : le geste doit etre reversible.</summary>
+    [HttpDelete("offres-ecartees/{jobOfferId:int}")]
+    public async Task<IActionResult> Reprendre(int jobOfferId)
+    {
+        var ligne = await _context.OffresEcartees
+            .FirstOrDefaultAsync(o => o.UserId == UserId() && o.JobOfferId == jobOfferId);
+        if (ligne != null)
+        {
+            _context.OffresEcartees.Remove(ligne);
+            await _context.SaveChangesAsync();
+        }
+        return NoContent();
     }
 
     /// <summary>

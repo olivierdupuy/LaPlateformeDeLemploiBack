@@ -164,6 +164,38 @@ public class JobOffersController : ControllerBase
             query = query.Where(j => j.CreatedAt >= since);
         }
 
+        // ── Ce que le candidat a dit ne pas vouloir voir ──
+        //
+        // Sans ce filtre, ecarter une offre ne l'ecarterait de rien : elle
+        // reviendrait a la visite suivante, et le bouton serait un
+        // mensonge. On ne l'applique qu'a un candidat identifie — un
+        // visiteur anonyme n'a rien declare, et un recruteur qui parcourt
+        // le catalogue n'a pas a voir le sien ampute.
+        var moi = GetUserId();
+        if (moi != null && User.IsInRole("Candidate"))
+        {
+            var ecartees = await _context.OffresEcartees.AsNoTracking()
+                .Where(o => o.UserId == moi)
+                .Select(o => o.JobOfferId)
+                .ToListAsync();
+            if (ecartees.Count > 0)
+                query = query.Where(j => !ecartees.Contains(j.Id));
+
+            var prefs = await _context.PreferencesEmploi.AsNoTracking()
+                .FirstOrDefaultAsync(p => p.UserId == moi);
+            var exclus = prefs?.Exclus() ?? Array.Empty<string>();
+
+            // Le rapprochement se fait sur la categorie, seul champ
+            // structure qui porte la famille de metier. Chercher dans le
+            // titre ecarterait « developpeur commercial » de quelqu'un qui
+            // ne veut pas de vente, ce qui n'est pas ce qu'il a demande.
+            foreach (var famille in exclus)
+            {
+                var f = famille;
+                query = query.Where(j => j.Category == null || j.Category != f);
+            }
+        }
+
         // ── Tri ──
         //
         // Le tri « pertinence » n'en etait pas un : il classait par « a la
