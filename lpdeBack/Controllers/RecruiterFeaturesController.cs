@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using System.Security.Claims;
 using lpdeBack.Data;
 using lpdeBack.Models;
+using lpdeBack.Services;
 using System.ComponentModel.DataAnnotations;
 using lpdeBack.Validation;
 
@@ -15,7 +16,13 @@ namespace lpdeBack.Controllers;
 public class RecruiterFeaturesController : ControllerBase
 {
     private readonly AppDbContext _context;
-    public RecruiterFeaturesController(AppDbContext context) => _context = context;
+    private readonly PerimetreRecruteur _perimetre;
+
+    public RecruiterFeaturesController(AppDbContext context, PerimetreRecruteur perimetre)
+    {
+        _context = context;
+        _perimetre = perimetre;
+    }
     private string UserId() => User.FindFirstValue(ClaimTypes.NameIdentifier)!;
     private bool IsAdmin() => User.IsInRole("Admin");
 
@@ -253,14 +260,70 @@ public class RecruiterFeaturesController : ControllerBase
             .Where(a => dto.Ids.Contains(a.Id))
             .ToListAsync();
 
+        // Le partage d'equipe s'applique ici comme ailleurs. Ce controle
+        // comparait l'auteur de l'offre a l'appelant, sans passer par le
+        // perimetre : un recruteur pouvait traiter la candidature d'un
+        // collegue une par une, et pas en lot. Rien ne l'annoncait — la
+        // ligne etait simplement ignoree.
+        var traitees = 0;
         foreach (var app in apps)
         {
-            if (!IsAdmin() && app.JobOffer.CreatedByUserId != uid) continue;
+            if (!IsAdmin() && !await _perimetre.PeutGerer(uid, app.JobOffer.CreatedByUserId)) continue;
+
+            if (app.ReviewedAt == null && dto.Status != StatutCandidature.EnAttente)
+                app.ReviewedAt = DateTime.UtcNow;
             app.Status = dto.Status;
+            traitees++;
         }
 
         await _context.SaveChangesAsync();
-        return Ok(new { updated = apps.Count });
+
+        // Le compte rendu portait le nombre de candidatures LUES, pas
+        // modifiees : un recruteur qui en selectionnait douze dont trois
+        // lui revenaient lisait « 12 mises a jour » et croyait les neuf
+        // autres traitees.
+        return Ok(new { updated = traitees, demandees = apps.Count });
+    }
+
+    /// <summary>
+    /// Ouvrir, suspendre ou fermer plusieurs offres d'un geste.
+    ///
+    /// Le pendant de l'action groupee sur les candidatures, qui existait
+    /// deja : une campagne de recrutement se suspend rarement offre par
+    /// offre.
+    /// </summary>
+    [HttpPatch("offers/bulk-etat")]
+    public async Task<IActionResult> BulkEtatOffres(BulkEtatOffreDto dto)
+    {
+        if (!EtatOffre.Existe(dto.Etat)) return BadRequest(new { message = "État inconnu." });
+
+        var uid = UserId();
+        var offres = await _context.JobOffers
+            .Where(o => dto.Ids.Contains(o.Id))
+            .ToListAsync();
+
+        var traitees = 0;
+        var ignorees = 0;
+        foreach (var o in offres)
+        {
+            if (!IsAdmin() && !await _perimetre.PeutGerer(uid, o.CreatedByUserId)) continue;
+
+            // Memes garde-fous qu'a l'unite : un brouillon n'a pas d'etat
+            // de publication, et rouvrir une offre non approuvee
+            // contournerait la moderation. Elles sont comptees a part
+            // plutot que silencieusement sautees.
+            if (o.IsDraft || (dto.Etat == EtatOffre.Ouverte && o.ModerationStatus != "Approved"))
+            {
+                ignorees++;
+                continue;
+            }
+
+            EtatOffre.Appliquer(o, dto.Etat);
+            traitees++;
+        }
+
+        await _context.SaveChangesAsync();
+        return Ok(new { updated = traitees, ignorees, demandees = offres.Count });
     }
 }
 
@@ -278,6 +341,17 @@ public class TemplateDto
 
     [Longueur(Limites.Nom), SansBalisage]
     public string? Category { get; set; }
+}
+
+public class BulkEtatOffreDto
+{
+    [MinLength(1, ErrorMessage = "Sélectionnez au moins une offre.")]
+    [MaxLength(200, ErrorMessage = "Traitez au maximum 200 offres à la fois.")]
+    public List<int> Ids { get; set; } = new();
+
+    [Required(ErrorMessage = "Indiquez l'état.")]
+    [EtatOffre]
+    public string Etat { get; set; } = string.Empty;
 }
 
 public class BulkStatusDto
