@@ -614,6 +614,17 @@ public static class ModelesCourriel
             "Reviewed" => ("Votre candidature a ete consultee",
                 $"<strong>{E(entreprise)}</strong> a ouvert votre candidature au poste de <strong>{E(poste)}</strong>.",
                 "Rien n'est decide a ce stade. Vous serez prevenu des qu'une suite sera donnee."),
+            // « Contactee » annonce un message a venir, ou deja parti. Le
+            // dire evite qu'un courriel du recruteur arrive sans contexte
+            // dans une boite ou l'on n'attendait plus rien.
+            "Contacted" => ("Le recruteur vous a contacte",
+                $"<strong>{E(entreprise)}</strong> vous a contacte au sujet du poste de <strong>{E(poste)}</strong>.",
+                "Regardez votre messagerie : la reponse s'y fait, et elle reste rattachee a cette candidature."),
+            // Le seul courriel de cette serie qui annonce une fin heureuse.
+            // Il ne promet rien sur la suite : un contrat se signe ailleurs.
+            "Hired" => ("Bienvenue chez " + E(entreprise),
+                $"<strong>{E(entreprise)}</strong> vous a recrute au poste de <strong>{E(poste)}</strong>.",
+                "Votre candidature est close, et c'est la bonne raison. Nous vous souhaitons une belle prise de poste."),
             _ => ("Votre candidature a change d'etat",
                 $"Votre candidature au poste de <strong>{E(poste)}</strong> chez <strong>{E(entreprise)}</strong> a change d'etat.",
                 "Le detail est consultable dans le suivi de vos candidatures."),

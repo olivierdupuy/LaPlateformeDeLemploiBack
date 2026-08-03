@@ -316,17 +316,18 @@ public class ApplicationsController : ControllerBase
         if (app == null) return NotFound();
         if (!IsAdmin() && !await _perimetre.PeutGerer(GetUserId(), app.JobOffer.CreatedByUserId)) return Forbid();
 
-        var validStatuses = new[] { "Pending", "Reviewed", "Accepted", "Rejected" };
-        if (!validStatuses.Contains(dto.Status)) return BadRequest("Statut invalide.");
-
-        var statusLabels = new Dictionary<string, string>
-        {
-            {"Pending", "en attente"}, {"Reviewed", "examinee"}, {"Accepted", "acceptee"}, {"Rejected", "refusee"}
-        };
+        if (!StatutCandidature.Existe(dto.Status)) return BadRequest("Statut invalide.");
 
         app.Status = dto.Status;
+
         // Horodate la premiere consultation, pour l'afficher au candidat.
-        if (dto.Status == "Reviewed" && app.ReviewedAt == null)
+        //
+        // Tout etat au-dela de « examinee » implique qu'on a lu le dossier :
+        // un recruteur qui passe directement a « contactee » l'a forcement
+        // ouvert. Sans cela, une candidature traitee vite laissait le
+        // candidat devant une etape « Consultee » eteinte alors qu'on
+        // venait de lui ecrire.
+        if (app.ReviewedAt == null && dto.Status != StatutCandidature.EnAttente)
             app.ReviewedAt = DateTime.UtcNow;
         await _context.SaveChangesAsync();
 
@@ -337,7 +338,7 @@ public class ApplicationsController : ControllerBase
             {
                 UserId = app.UserId,
                 Title = "Statut de candidature modifie",
-                Message = $"Votre candidature pour \"{app.JobOffer.Title}\" chez {app.JobOffer.Company} est maintenant {statusLabels.GetValueOrDefault(dto.Status, dto.Status)}.",
+                Message = $"Votre candidature pour \"{app.JobOffer.Title}\" chez {app.JobOffer.Company} est maintenant {StatutCandidature.Libelle(dto.Status)}.",
                 Link = "/suivi",
                 Type = "StatutModifie"
             });
@@ -358,7 +359,7 @@ public class ApplicationsController : ControllerBase
 
             // Push notification (mobile will suppress if app is in foreground)
             await _pushService.SendToUser(app.UserId, "Statut de candidature modifie",
-                $"Votre candidature pour \"{app.JobOffer.Title}\" est maintenant {statusLabels.GetValueOrDefault(dto.Status, dto.Status)}.",
+                $"Votre candidature pour \"{app.JobOffer.Title}\" est maintenant {StatutCandidature.Libelle(dto.Status)}.",
                 "/tabs/applications");
 
             // C'est la reponse qu'on attend le plus, et c'est celle qui ne

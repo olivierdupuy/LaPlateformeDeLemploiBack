@@ -884,7 +884,7 @@ public class AdminController : ControllerBase
         // habituellement retenue par les chartes de recrutement.
         var limiteRelance = DateTime.UtcNow.AddDays(-StaleAfterDays);
         if (stale == true)
-            query = query.Where(a => (a.Status == "Pending" || a.Status == "Reviewed") && a.AppliedAt < limiteRelance);
+            query = query.Where(a => StatutCandidature.EnCours.Contains(a.Status) && a.AppliedAt < limiteRelance);
 
         var facets = await query.GroupBy(_ => 1).Select(g => new ApplicationFacetsDto
         {
@@ -893,7 +893,10 @@ public class AdminController : ControllerBase
             Reviewed = g.Count(a => a.Status == "Reviewed"),
             Accepted = g.Count(a => a.Status == "Accepted"),
             Rejected = g.Count(a => a.Status == "Rejected"),
-            Stale = g.Count(a => (a.Status == "Pending" || a.Status == "Reviewed") && a.AppliedAt < limiteRelance),
+            // « Contactee » compte parmi les dossiers qui dorment : le
+            // recruteur a ecrit, il attend, et un silence de trente jours
+            // apres un premier contact est exactement ce qu'on veut voir.
+            Stale = g.Count(a => StatutCandidature.EnCours.Contains(a.Status) && a.AppliedAt < limiteRelance),
             // Moyenne sur les seuls dossiers lus : inclure les autres avec
             // un delai nul ferait baisser la mesure a mesure que le retard
             // s'accumule, soit exactement l'inverse de ce qu'elle dit.
@@ -1079,7 +1082,7 @@ public class AdminController : ControllerBase
 
         if (!string.IsNullOrWhiteSpace(dto.Statut))
         {
-            var valides = new[] { "Pending", "Reviewed", "Accepted", "Rejected" };
+            var valides = StatutCandidature.Tous;
             if (!valides.Contains(dto.Statut)) return BadRequest(new { message = "Statut inconnu." });
 
             // Premiere transition hors « en attente » : on horodate la

@@ -245,8 +245,7 @@ public class RecruiterFeaturesController : ControllerBase
     [HttpPatch("applications/bulk-status")]
     public async Task<IActionResult> BulkUpdateStatus(BulkStatusDto dto)
     {
-        var validStatuses = new[] { "Pending", "Reviewed", "Accepted", "Rejected" };
-        if (!validStatuses.Contains(dto.Status)) return BadRequest("Statut invalide.");
+        if (!StatutCandidature.Existe(dto.Status)) return BadRequest("Statut invalide.");
 
         var uid = UserId();
         var apps = await _context.Applications
@@ -291,6 +290,6 @@ public class BulkStatusDto
     public List<int> Ids { get; set; } = new();
 
     [Required(ErrorMessage = "Indiquez le statut.")]
-    [Parmi("Pending", "Reviewed", "Accepted", "Rejected")]
+    [StatutCandidature]
     public string Status { get; set; } = string.Empty;
 }

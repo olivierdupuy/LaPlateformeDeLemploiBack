@@ -1,4 +1,5 @@
 using System.ComponentModel.DataAnnotations;
+using lpdeBack.Models;
 using lpdeBack.Validation;
 
 namespace lpdeBack.DTOs;
@@ -60,7 +61,7 @@ public class ApplicationUpdateStatusDto
     /// appelle la methode autrement.
     /// </summary>
     [Required(ErrorMessage = "Indiquez le statut.")]
-    [Parmi("Pending", "Reviewed", "Accepted", "Rejected")]
+    [StatutCandidature]
     public string Status { get; set; } = string.Empty;
 }
 

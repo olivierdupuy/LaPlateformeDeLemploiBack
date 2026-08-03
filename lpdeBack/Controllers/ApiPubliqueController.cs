@@ -300,7 +300,7 @@ public class ApiPubliqueController : ControllerBase
     [CleApi("candidatures:ecrire")]
     public async Task<IActionResult> ChangerStatut(int id, [FromBody] StatutEntrant entrant)
     {
-        var permis = new[] { "Pending", "Reviewed", "Accepted", "Rejected" };
+        var permis = StatutCandidature.Tous;
         if (!permis.Contains(entrant.Statut))
             return BadRequest(new { message = $"Statut inconnu. Valeurs admises : {string.Join(", ", permis)}." });
 
